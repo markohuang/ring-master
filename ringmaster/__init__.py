@@ -23,11 +23,11 @@ class MolData:
     mol_tree: MolGraphTensors
     mol_graph: MolGraphTensors
     order: torch.Tensor
-    def __iter(self):
+    def __iter__(self):
         return iter((self.mol_tree, self.mol_graph, self.order))
 
 
-def sort_atom_pairs(
+def sort_candidates(
         candidates: List[int],
         used_indices: List[int],
         candidate_scores: torch.Tensor
@@ -80,8 +80,8 @@ class RingMaster:
     def encoded_mol(self):
         assert RingMaster.vocab is not None and RingMaster.atom_vocab is not None
         return MolData(
-            mol_graph=tensorize(self.parsed_mol.graph, vocab=self.atom_vocab, is_motif=False),
             mol_tree=tensorize(self.parsed_mol.tree, vocab=self.vocab, is_motif=True),
+            mol_graph=tensorize(self.parsed_mol.graph, vocab=self.atom_vocab, is_motif=False),
             order=torch.IntTensor(self.parsed_mol.order)
         )
 
@@ -95,6 +95,7 @@ class RingMaster:
             if not do_traversal:
                 stack.pop()
                 continue
+            curr_idx += 1
             father_motif = stack[-1]
             add_motif_success = False
             for motif_prediction in treenet.get_topk_motifs(curr_idx, self.topk):
@@ -102,8 +103,10 @@ class RingMaster:
                 curr_motif = MotifNode(motif_prediction)
                 candidates, used_indices = father_motif.get_candidates(curr_motif)
                 candidate_scores = treenet.get_candidate_scores(curr_idx)
-                sorted_atom_pairs = sort_atom_pairs(candidates, used_indices, candidate_scores) # [ [(43,2),(44,3)], [...] ]
-                for atom_pairs in sorted_atom_pairs:
+                sorted_candidates = sort_candidates(candidates, used_indices, candidate_scores) # [ [(43,2),(44,3)], [...] ]
+                curr_atom_idx = curr_motif.attachment_info.attach_point_indices
+                for fa_atom_idx, _ in sorted_candidates:
+                    atom_pairs = list(zip(fa_atom_idx, curr_atom_idx)) # e.g., [(43, 2), (44, 3)]
                     if molecule.add_motif(curr_motif, father_motif, atom_pairs): # updates both motifs with used information
                         stack.append(curr_motif)
                         add_motif_success = True

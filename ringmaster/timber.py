@@ -56,11 +56,11 @@ class MotifNode:
         """return canonicalized mol for current motif"""
         return CanonicalizedMol(*canonicalize(get_mol(self.ismiles)))
 
-    @property
+    @cached_property
     def attachment_info(self) -> MotifAttachmenInfo:
         """return attachment info for current motif"""
+        mol = get_mol(self.ismiles)
         if mol.GetNumAtoms() == 1:
-            mol = get_mol(self.ismiles)
             attach_points = [0]
         else:
             mol, atom_order = canonicalize(mol)
@@ -112,7 +112,7 @@ class MotifNode:
         set_global_atom_info(molecule)
         for ans in self.target_atoms:
             set_atom_label(molecule, ans)
-        label_all_used_atoms(molecule, self.used.used)
+        label_all_used_atoms(molecule, self.used.atoms)
         mol = get_clique_mol(molecule, self.global_atom_indices)
         mol, atom_order = canonicalize(mol)
         atom_order = check_rotation_order(mol, atom_order)
@@ -172,7 +172,7 @@ class EditableMol:
         """
         global_index_of_intersecting_atoms = [x[0] for x in atom_pairs]
         atom_map = {y: x for x, y in atom_pairs}
-        molecule = Chem.Mol(self.molecule)
+        molecule = Chem.RWMol(self.molecule)
         new_atoms, used_bonds = [], []
         curr_motif_mol, curr_motif_atom_order = curr_motif.mol
         for atom_idx in curr_motif_atom_order:

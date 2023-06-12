@@ -70,9 +70,9 @@ class NetworkPrediction:
         return icls_topk.squeeze().tolist()
         
     def get_candidate_scores(self, curr_idx):
-        assert curr_idx > 0 and curr_idx < len(self.cls_pred)-1
-        curr_cls_emb = self.cls_pred[curr_idx]
-        fa_cls_emb = self.cls_pred[curr_idx-1]
+        assert curr_idx > 0 and curr_idx < len(self.cls_pred)
+        curr_cls_emb = self.tree_vec[curr_idx]
+        fa_cls_emb = self.tree_vec[curr_idx-1]
         cands_input = fa_cls_emb + curr_cls_emb
         cand_vecs = self.candidate_vector_nn(cands_input).reshape(NetworkPrediction.max_cand_size,NetworkPrediction.cands_hidden_size)
         return self.candidate_nn(cand_vecs)

@@ -15,6 +15,16 @@ class MolParser:
         self.father_of, self.order = self.update_tree_order()
         self.label_tree()
     
+    @property
+    def bond_list(self):
+        if MolParser.__dict__['bond_list'] is None:
+            raise ValueError("MolParser.bond_list is not set")
+        return MolParser.__dict__['bond_list']
+    
+    @bond_list.setter
+    def bond_list(self, value):
+        MolParser.__dict__['bond_list'] = value
+
     @cached_property
     def n_atoms(self):
         return self.mol.GetNumAtoms()
