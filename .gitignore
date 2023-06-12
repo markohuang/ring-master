@@ -1,0 +1,9 @@
+.vscode/
+logs/
+*.egg-info/
+**/__pycache__/
+test*
+run.sh
+slurm-outputs/
+test*
+*.ipynb
