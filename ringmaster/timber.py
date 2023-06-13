@@ -52,6 +52,10 @@ class MotifNode:
         self.used = UsedCandidates(atoms=[], bonds=[])
 
     @cached_property
+    def num_atoms(self) -> int:
+        return get_mol(self.ismiles).GetNumAtoms()
+
+    @cached_property
     def mol(self) -> Chem.rdchem.Mol:
         """return canonicalized mol for current motif"""
         return CanonicalizedMol(*canonicalize(get_mol(self.ismiles)))
@@ -112,7 +116,8 @@ class MotifNode:
         set_global_atom_info(molecule)
         for ans in self.target_atoms:
             set_atom_label(molecule, ans)
-        label_all_used_atoms(molecule, self.used.atoms)
+        if self.num_atoms != 1: # one atom is special case
+            label_all_used_atoms(molecule, self.used.atoms)
         mol = get_clique_mol(molecule, self.global_atom_indices)
         mol, atom_order = canonicalize(mol)
         atom_order = check_rotation_order(mol, atom_order)
@@ -123,7 +128,7 @@ class MotifNode:
         father_global_num = ParseAtomInfo(father.mol).global_idx
         if father.mol.GetNumAtoms() == 1:
             candidates = [[father_global_num(0)]]
-            return candidates
+            return candidates, []
         child = child_motif.attachment_info
         all_candidates = get_all_candidates(
             father.order,

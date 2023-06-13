@@ -74,5 +74,6 @@ class NetworkPrediction:
         curr_cls_emb = self.tree_vec[curr_idx]
         fa_cls_emb = self.tree_vec[curr_idx-1]
         cands_input = fa_cls_emb + curr_cls_emb
-        cand_vecs = self.candidate_vector_nn(cands_input).reshape(NetworkPrediction.max_cand_size,NetworkPrediction.cands_hidden_size)
+        cand_vecs = self.candidate_vector_nn(cands_input).\
+            reshape(NetworkPrediction.max_cand_size, NetworkPrediction.cands_hidden_size)
         return self.candidate_nn(cand_vecs)

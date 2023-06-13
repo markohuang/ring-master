@@ -91,7 +91,7 @@ class RingMaster:
         molecule.add_motif(root)
         stack = [root]
         curr_idx = 0
-        for do_traversal in treenet.traversal_predictions:
+        for idx, do_traversal in enumerate(treenet.traversal_predictions):
             if not do_traversal:
                 stack.pop()
                 continue
@@ -107,9 +107,14 @@ class RingMaster:
                 curr_atom_idx = curr_motif.attachment_info.attach_point_indices
                 for fa_atom_idx, _ in sorted_candidates:
                     atom_pairs = list(zip(fa_atom_idx, curr_atom_idx)) # e.g., [(43, 2), (44, 3)]
+                    # if (42,1) in atom_pairs:
+                    #     pass
+                    # print('trying:', idx, curr_idx, atom_pairs)
                     if molecule.add_motif(curr_motif, father_motif, atom_pairs): # updates both motifs with used information
                         stack.append(curr_motif)
                         add_motif_success = True
+                        # print('success!')
+                        break
             if not add_motif_success:
                 stack.pop()
         return molecule
