@@ -4,18 +4,20 @@ from functools import partial
 from itertools import chain
 from .vocab import PairVocab, COMMON_ATOM_VOCAB, BOND_LIST
 from tqdm import tqdm
-from ringmaster import RingMaster
 from ringmaster.timber import MotifNode
 from ringmaster.nn_utils import NetworkPrediction
-from ringmaster.timberwright import MolParser
+from ringmaster.lumberjack import MolParser
 from argparse import Namespace
 
 
 params = Namespace(**dict(
     vocab_path='vocab.txt',
     smiles_path='smiles.txt',
-    max_cand_size=20,
-    cands_hidden_size=64,
+    max_cand_size=12,
+    cands_hidden_size=24,
+    hidden_size=32,
+    atom_vocab=COMMON_ATOM_VOCAB,
+    bond_list=BOND_LIST,
 ))
 
 def process_vocab(batch, data):
@@ -55,18 +57,23 @@ def setup_vocab(params):
     with open(vocab_path, 'w') as f:
         f.write('<pad> <pad>\n')
         f.write('\n'.join(list(' '.join(x) for x in lst_vocab)))
-    
+
+def setup_dataloader():
+    pass
+
+
 def setup_experiment(params):
-    MolParser.bond_list = BOND_LIST
+    MolParser.bond_list = params.bond_list
     setup_vocab(params)
     with open(params.vocab_path, 'r') as f:
-        MOTIF_VOCAB = PairVocab([x.strip("\r\n ").split() for x in f])
-    RingMaster.vocab = MOTIF_VOCAB
-    RingMaster.atom_vocab = COMMON_ATOM_VOCAB
-    MotifNode.vocab = MOTIF_VOCAB
-    NetworkPrediction.vocab = MOTIF_VOCAB
+        motif_vocab = PairVocab([x.strip("\r\n ").split() for x in f])
+    MolParser.vocab = motif_vocab
+    MolParser.atom_vocab = params.atom_vocab
+    MotifNode.vocab = motif_vocab
+    NetworkPrediction.vocab = motif_vocab
     NetworkPrediction.max_cand_size = params.max_cand_size
     NetworkPrediction.cands_hidden_size = params.cands_hidden_size
+    return motif_vocab
 
 
-__all__ = ['params', 'setup_experiment']
+__all__ = ['params', 'setup_experiment', 'find_max_lengths']

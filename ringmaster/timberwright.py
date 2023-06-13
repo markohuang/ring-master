@@ -1,234 +1,184 @@
-"""MolParser: requires bond_list"""
-
+import torch
+import math
 from rdkit import Chem
-import networkx as nx
-from collections import defaultdict
-from functools import cached_property
-from ringmaster.chem_utils import *
+from ringmaster.chem_utils import ParseAtomInfo, sanitize, clear_global_atom_info, get_all_candidates
+from ringmaster.nn_utils import NetworkPrediction
 from ringmaster.timber import MotifNode
+from itertools import chain
+from typing import *
 
-class MolParser:
-    bond_list = None
-    def __init__(self, smiles: str) -> None:
-        self.smiles = smiles
-        self.mol = get_mol(smiles)
-        self.father_of, self.order = self.update_tree_order()
-        self.label_tree()
+
+def get_candidates(father_motif, child_motif):
+    father = father_motif.as_father
+    father_global_num = ParseAtomInfo(father.mol).global_idx
+    if father.mol.GetNumAtoms() == 1:
+        candidates = [[father_global_num(0)]]
+        return candidates, []
+    child = child_motif.attachment_info
+    all_candidates = get_all_candidates(
+        father.order,
+        child.num_attach_points,
+        child.is_symmetric
+    )
     
+    def not_the_same_atom(x):
+        child_atom = child.attach_point_atoms[0]
+        father_atom = father.mol.GetAtomWithIdx(x)
+        not_same_symbol = child_atom.GetSymbol() != father_atom.GetSymbol()
+        not_same_charge = child_atom.GetFormalCharge() != father_atom.GetFormalCharge()
+        return not_same_symbol or not_same_charge
+
+    def not_the_same_atoms(atoms):
+        # this does not check if they are in the correct order
+        curr_set = set( (atom.GetSymbol(), atom.GetFormalCharge()) for atom in child.attach_point_atoms )
+        fa_set = set( (father.mol.GetAtomWithIdx(x).GetSymbol(), father.mol.GetAtomWithIdx(x).GetFormalCharge()) for x in atoms )
+        return curr_set != fa_set
+    # 1. get candidates
+    # 2. get indices of candidates that are used
+    # 3. get indices of candidates that do not match with attachment points (i.e., different atom / formal charge)
+    # bond_match(mol, c[0], c[-1], emol, attach_points[0], attach_points[-1])
+    used_indices = []
+    if child.num_attach_points == 1:
+        assert len(child.attach_point_atoms) == 1
+        for cand_idx, x in enumerate(chain.from_iterable(all_candidates)):
+            if (father_global_num(x) in father.used) or not_the_same_atom(x):
+                used_indices.append(cand_idx)
+    else:
+        for cand_idx, cand in enumerate(all_candidates):
+            # cand can be 2, 3, 4 ( list(pairwise(cand)) )
+            bonds = [cand[i : i + 2] for i in range(len(cand)-1)]
+            if not_the_same_atoms(cand) or any(tuple(father_global_num(b) for b in bond) in father.used for bond in bonds):
+                used_indices.append(cand_idx)
+    candidates = [ list(map(father_global_num, x)) for x in all_candidates ]
+    return candidates, used_indices
+
+
+def sort_candidates(
+        candidates: List[int],
+        used_indices: List[int],
+        candidate_scores: torch.Tensor
+):
+    candidate_scores[used_indices] = -torch.inf
+    # sorted_cands = sorted( list(zip(candidates, candidate_scores.tolist())), key = lambda x:x[1], reverse=True )
+    sorted_cands = sorted([(x,y) for x,y in zip(candidates, candidate_scores.tolist()) if not math.isinf(y)], key = lambda x:x[1], reverse=True)
+    return sorted_cands
+
+class EditableMol:
+    """the editable molecule built by decoding network predictions"""
+    def __init__(self):
+        self.molecule = Chem.RWMol()
+
+    def add_motif(self, curr_motif, father_motif=False, atom_pairs=[]):
+        """
+        if succeeds, updates 
+            the curr_motif and father_motif with new used atoms
+            the curr_motif with its global atom indices
+        if fails, undos the trial and returns False
+        """
+        if not atom_pairs and father_motif:
+            return False
+        global_index_of_intersecting_atoms = [x[0] for x in atom_pairs]
+        atom_map = {y: x for x, y in atom_pairs}
+        molecule = Chem.RWMol(self.molecule)
+        new_atoms, used_bonds = [], []
+        curr_motif_mol, curr_motif_atom_order = curr_motif.mol
+        for atom_idx in curr_motif_atom_order:
+            atom = curr_motif_mol.GetAtomWithIdx(atom_idx)
+            if atom_idx in atom_map: # shared with fa cls
+                idx = atom_map[atom_idx]
+                new_atoms.append(idx)
+            else: # only in current cls
+                new_atom = Chem.Atom(atom.GetSymbol())
+                new_atom.SetFormalCharge(atom.GetFormalCharge())
+                idx = molecule.AddAtom(new_atom) # if not in atom map, add new node_idx = len(num nodes) + 1
+                atom_map[atom_idx] = idx
+                new_atoms.append(idx)
+                # if atommapnum = 1, atom is in intersection with fa_cls
+
+        for bond in curr_motif_mol.GetBonds():
+            a1 = atom_map[bond.GetBeginAtom().GetIdx()]
+            a2 = atom_map[bond.GetEndAtom().GetIdx()]
+            if a1 == a2:
+                return False
+            bond_type = bond.GetBondType()
+            existing_bond = molecule.GetBondBetweenAtoms(a1, a2)
+            if existing_bond is None:
+                molecule.AddBond(a1, a2, bond_type)
+            else:
+                if bond_type != existing_bond.GetBondType():
+                    return False
+                used_bonds.extend( [(a1,a2),(a2,a1)] ) # sharing bonds only possible for ring2ring
+        
+        tmp_mol = Chem.Mol(molecule)
+        if sanitize(tmp_mol, kekulize=False) is None:
+            return False
+        
+        # if past sanitize it means motif is valid for adding
+        # set self.molecule and update curr_motif and father_motif
+        if father_motif:
+            used_atoms = []
+            for atom_idx in father_motif.as_father.order:
+                global_idx = ParseAtomInfo(father_motif.as_father.mol).global_idx(atom_idx)
+                if global_idx in global_index_of_intersecting_atoms:
+                    used_atoms.append(global_idx)
+            father_motif.used.atoms.extend(used_atoms)
+            father_motif.used.bonds.extend(used_bonds)
+            curr_motif.used.atoms.extend(used_atoms)
+            curr_motif.used.bonds.extend(used_bonds)
+            father_motif.molecule = molecule
+        curr_motif.global_atom_indices = new_atoms
+        curr_motif.molecule = molecule
+        self.molecule = molecule
+        return True
+
     @property
-    def bond_list(self):
-        if MolParser.__dict__['bond_list'] is None:
-            raise ValueError("MolParser.bond_list is not set")
-        return MolParser.__dict__['bond_list']
-    
-    @bond_list.setter
-    def bond_list(self, value):
-        MolParser.__dict__['bond_list'] = value
+    def smiles(self):
+        copy_mol = Chem.Mol(self.molecule)
+        clear_global_atom_info(copy_mol)
+        return Chem.CanonSmiles(Chem.MolToSmiles(copy_mol))
 
-    @cached_property
-    def n_atoms(self):
-        return self.mol.GetNumAtoms()
-    
-    @cached_property
-    def clusters(self):
-        if self.n_atoms == 1: #special case
-            return [(0,)], [[0]]
-        clusters = []
-        for bond in self.mol.GetBonds():
-            a1 = bond.GetBeginAtom().GetIdx()
-            a2 = bond.GetEndAtom().GetIdx()
-            if not bond.IsInRing():
-                clusters.append( (a1,a2) )
-        ssr = [tuple(x) for x in Chem.GetSymmSSSR(self.mol)]
-        clusters.extend(ssr)
-        if 0 not in clusters[0]: #root is not node[0]
-            for i,cls in enumerate(clusters):
-                if 0 in cls:
-                    clusters = [clusters[i]] + clusters[:i] + clusters[i+1:]
-                    #clusters[i], clusters[0] = clusters[0], clusters[i]
+
+def decode(treenet: NetworkPrediction, topk=5) -> EditableMol:
+    molecule = EditableMol()
+    root_prediction = treenet.root_info
+    if not root_prediction: return molecule
+    root = MotifNode(root_prediction)
+    molecule.add_motif(root)
+    stack = [root]
+    curr_idx = 0
+    for idx, do_traversal in enumerate(treenet.traversal_predictions):
+        if not stack: break
+        if not do_traversal:
+            stack.pop()
+            continue
+        curr_idx += 1
+        if curr_idx >= treenet.max_seq_length:
+            break
+        father_motif = stack[-1]
+        add_motif_success = False
+        for motif_prediction in treenet.get_topk_motifs(curr_idx, topk):
+            if add_motif_success: break
+            if not motif_prediction: break # <pad> token
+            father_motif.decorate_father()
+            curr_motif = MotifNode(motif_prediction)
+            candidates, used_indices = get_candidates(father_motif, curr_motif)
+            candidate_scores = treenet.get_candidate_scores(curr_idx)
+            # masked_indices = torch.arange(len(candidates),candidate_scores.shape[0]).long() # zip takes care of this
+            # candidate_scores[masked_indices] = -torch.inf
+            # # used_indices = torch.tensor(used)
+            # # masked_indices = torch.cat((used_indices, masked_indices)).long()
+            sorted_candidates = sort_candidates(candidates, used_indices, candidate_scores) # [ [(43,2),(44,3)], [...] ]
+            curr_atom_idx = curr_motif.attachment_info.attach_point_indices
+            for fa_atom_idx, _ in sorted_candidates:
+                atom_pairs = list(zip(fa_atom_idx, curr_atom_idx)) # e.g., [(43, 2), (44, 3)]
+                # if (42,1) in atom_pairs:
+                #     pass
+                # print('trying:', idx, curr_idx, atom_pairs)
+                if molecule.add_motif(curr_motif, father_motif, atom_pairs): # updates both motifs with used information
+                    stack.append(curr_motif)
+                    add_motif_success = True
+                    # print('success!')
                     break
-        return clusters
-
-    @property
-    def n_clusters(self):
-        return len(self.clusters)
-    
-    @property
-    def atom_cls_indices(self):
-        atom_cls = [[] for _ in range(self.n_atoms)]
-        for i in range(len(self.clusters)):
-            for atom in self.clusters[i]:
-                atom_cls[atom].append(i)
-        return atom_cls
-
-    @cached_property
-    def graph(self):
-        assert self.bond_list is not None
-        graph = nx.DiGraph(Chem.rdmolops.GetAdjacencyMatrix(self.mol))
-        for atom in self.mol.GetAtoms():
-            graph.nodes[atom.GetIdx()]['label'] = (atom.GetSymbol(), atom.GetFormalCharge())
-        for bond in self.mol.GetBonds():
-            a1 = bond.GetBeginAtom().GetIdx()
-            a2 = bond.GetEndAtom().GetIdx()
-            btype = self.bond_list.index( bond.GetBondType() )
-            graph[a1][a2]['label'] = btype
-            graph[a2][a1]['label'] = btype
-        return graph
-    
-    @cached_property
-    def tree(self):
-        # tree representation of molecule
-        graph = nx.empty_graph( self.n_clusters )
-        for atom, nei_cls in enumerate(self.atom_cls_indices):
-            if len(nei_cls) <= 1: continue # if atom is only in one aba or ring group
-            bonds = [c for c in nei_cls if len(self.clusters[c]) == 2]
-            rings = [c for c in nei_cls if len(self.clusters[c]) > 4] # TODO: need to change to 2
-            # if atom belongs to more than 2 (e.g., atom-bond-atom) clusters
-            if len(nei_cls) > 2 and len(bonds) >= 2:
-                # add edge between [atom] cluster (appended to clusters) and nei_cls
-                self.clusters.append([atom])
-                c2 = self.n_clusters - 1
-                graph.add_node(c2)
-                for c1 in nei_cls:
-                    graph.add_edge(c1, c2, weight = 100) # TODO: remove weights
-            # if atom belongs to more than 2 rings
-            elif len(rings) > 2: #Bee Hives, len(nei_cls) > 2 
-                self.clusters.append([atom]) #temporary value, need to change
-                c2 = self.n_clusters - 1
-                graph.add_node(c2)
-                for c1 in nei_cls:
-                    graph.add_edge(c1, c2, weight = 100)
-            # pairwise connect clusters that the atom belongs to and set edge weight to be intersection of clusters
-            else:
-                for i,c1 in enumerate(nei_cls):
-                    for c2 in nei_cls[i + 1:]:
-                        inter = set(self.clusters[c1]) & set(self.clusters[c2])
-                        graph.add_edge(c1, c2, weight = len(inter))
-        n, m = len(graph.nodes), len(graph.edges)
-        assert n - m <= 1 #must be connected
-        tree = graph if n - m == 1 else nx.maximum_spanning_tree(graph)
-        return nx.DiGraph(tree)
-
-
-    def update_tree_order(self):
-        """updates moltree/clusters to match the order of dfs traversal"""
-        order, pa = [], {}
-        def dfs(order, pa, x, fa):
-            pa[x] = fa 
-            # fix traversal order
-            sorted_child = sorted([ y for y in self.tree[x] if y != fa ]) #better performance with fixed order
-            for idx,y in enumerate(sorted_child):
-                # x -> curr, y -> child
-                # each child of node x will have label ++ in visiting order
-                self.tree[x][y]['label'] = 0 
-                self.tree[y][x]['label'] = idx + 1 #position encoding
-                # prev_sib contains all previously visited sibling nodes + parent + grandfather node
-                order.append( (x,y,1) )
-                dfs(order, pa, y, x)
-                order.append( (y,x,0) )
-        dfs(order, pa, 0, -1)
-        order.append( (0, None, 0) )
-        # update motif labeling to match tree traversal order
-        order_list = [0] 
-        order_labels = []
-        for _, curr, topo in order:
-            order_labels.append(topo)
-            if topo == 1:
-                order_list.append(curr)
-        order_map = {value: index for index, value in enumerate(order_list)}
-        self.tree = nx.relabel_nodes(self.tree, order_map)
-        # update clusters
-        self.clusters = [self.clusters[i] for i in order_list]
-        # update parents
-        father_of = {} 
-        for k,v in pa.items():
-            if v == -1:
-                father_of[k] = v
-                continue
-            father_of[order_map[k]] = order_map[v]
-        return father_of, order_labels
-
-
-    def label_tree(self):
-        mol = Chem.Mol(self.mol)
-        set_global_atom_info(mol)
-        used = defaultdict(list)
-        first_time = True
-        for i,cls in enumerate(self.clusters):
-            fa_cls_idx = self.father_of[i]
-            fa_cls = self.clusters[fa_cls_idx]
-            inter_atoms = set(cls) & set(fa_cls) if fa_cls_idx >= 0 else set()
-            # cmol is the mol for the cluster of atoms within the original smiles
-            cmol, inter_label = get_inter_label(mol, cls, inter_atoms)
-            ismiles = get_smiles(cmol)
-            clear_global_atom_info(cmol)
-            smiles = get_smiles(cmol)
-            self.tree.nodes[i].update(dict(
-                smiles=smiles,
-                ismiles=ismiles,
-                inter_label=inter_label,
-                label=(smiles, ismiles) if len(cls) > 1 else (smiles, smiles),
-                cluster=cls,
-                assm_cands=-1,
-            ))
-            if (fa_cls_idx == 0 and first_time) or (fa_cls_idx >= 0 and len(self.clusters[ fa_cls_idx ]) > 2): #uncertainty occurs in assembly
-                first_time = False
-                father_motif = MotifNode(self.tree.nodes[fa_cls_idx]['ismiles'])
-                father_motif.molecule = mol
-                father_motif.used.atoms.extend(used[fa_cls_idx])
-                father_motif.target_atoms = inter_atoms
-                father_motif.global_atom_indices = fa_cls
-                father = father_motif.as_father
-                label, global_label = [], []
-                fa_parser = ParseAtomInfo(father.mol)
-                for atom_idx in father.order:
-                    if fa_parser.is_label(atom_idx):
-                        label.append(atom_idx)
-                        global_label.append(fa_parser.global_idx(atom_idx))
-                used[i].extend(global_label)
-                used[fa_cls_idx].extend(global_label)
-                is_symmetric = True
-                # construct cands
-                inter_size = len(inter_atoms)
-                if inter_size > 1:
-                    anchor_smiles = [a[1] for a in inter_label]
-                    assert len(anchor_smiles) == 2
-                    is_symmetric = anchor_smiles[0] == anchor_smiles[1]
-                candidates = get_all_candidates(father.order, inter_size, is_symmetric)
-                
-                if not is_symmetric:
-                    copy_mol = Chem.Mol(mol)
-                    clear_global_atom_info(copy_mol)
-                    for j,l in enumerate(global_label): # label atoms' global idx
-                        copy_mol.GetAtomWithIdx(l).SetAtomMapNum(j+1)
-                    curr_mol = get_clique_mol(copy_mol, cls)
-                    curr_mol_reordered, cluster_order = canonicalize(curr_mol)
-                    reverse_assm = False
-                    curr_idx = -1
-                    for a in cluster_order:
-                        new_idx = curr_mol_reordered.GetAtomWithIdx(a).GetAtomMapNum()
-                        if new_idx:
-                            if new_idx < curr_idx:
-                                reverse_assm = True
-                                break
-                            curr_idx = new_idx
-                    if reverse_assm:
-                        self.tree.nodes[i]['assm_cands'] = candidates.index(label[::-1])
-                    else:
-                        self.tree.nodes[i]['assm_cands'] = candidates.index(label)
-                else:
-                    if label in candidates:
-                        self.tree.nodes[i]['assm_cands'] = candidates.index(label)
-                    else:
-                        self.tree.nodes[i]['assm_cands'] = candidates.index(label[::-1]) # reverse order
-
-                child_order = self.tree[i][fa_cls_idx]['label']
-                diff = set(cls) - set(fa_cls)
-                for fa_atom in inter_atoms:
-                    for ch_atom in self.graph[fa_atom]:
-                        if ch_atom in diff:
-                            label = self.graph[ch_atom][fa_atom]['label']
-                            if type(label) is int: #in case one bond is assigned multiple times
-                                self.graph[ch_atom][fa_atom]['label'] = (label, child_order)
-            else:
-                used[i].extend(inter_atoms)
+        if not add_motif_success:
+            stack.pop()
+    return molecule

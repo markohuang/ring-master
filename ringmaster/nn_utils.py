@@ -1,23 +1,6 @@
+"""NetworkPrediction: requires max_cand_size, cands_hidden_size, vocab """
 import torch
 import torch.nn.functional as F
-"""NetworkPrediction: requires max_cand_size, cands_hidden_size, vocab """
-
-import networkx as nx
-from rdkit import Chem
-# from experiments.oled import params, vocab
-from torch_geometric.data import HeteroData
-from functools import cached_property
-
-# MAX_CAND_SIZE = params.max_cand_size
-# CANDS_HIDDEN_SIZE = params.cands_hidden_size
-
-
-def create_pad_tensor(alist):
-    max_len = max([len(a) for a in alist])
-    for a in alist:
-        pad_len = max_len - len(a)
-        a.extend([-1] * pad_len)
-    return torch.IntTensor(alist)
 
 class NetworkPrediction:
     max_cand_size = None
@@ -37,6 +20,10 @@ class NetworkPrediction:
         self.traversal_predictions = traversal_predictions
         self.candidate_vector_nn = candidate_vector_nn
         self.candidate_nn = candidate_nn
+
+    @property
+    def max_seq_length(self):
+        return self.tree_vec.shape[0]
 
     @property
     def root_info(self):
@@ -76,4 +63,4 @@ class NetworkPrediction:
         cands_input = fa_cls_emb + curr_cls_emb
         cand_vecs = self.candidate_vector_nn(cands_input).\
             reshape(NetworkPrediction.max_cand_size, NetworkPrediction.cands_hidden_size)
-        return self.candidate_nn(cand_vecs)
+        return self.candidate_nn(cand_vecs).squeeze()
