@@ -53,7 +53,8 @@ def tensorize(G, vocab, is_motif=False):
             fmess.append( (u, v, attr[0], attr[1]) )
         else:
             fmess.append( (u, v, attr, 0) )
-        edge_dict[(u, v)] = eid = len(edge_dict) + 1 # edge index starts at 1
+        # marko/jun14: edge index now starts at 0
+        edge_dict[(u, v)] = eid = len(edge_dict) # edge index starts at 1
         G[u][v]['mess_idx'] = eid
         agraph[v].append(eid)
     fnode = torch.IntTensor(fnode)

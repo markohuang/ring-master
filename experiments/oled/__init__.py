@@ -58,6 +58,7 @@ def setup_vocab(params):
         f.write('<pad> <pad>\n')
         f.write('\n'.join(list(' '.join(x) for x in lst_vocab)))
 
+
 def setup_dataloader():
     pass
 
