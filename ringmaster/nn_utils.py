@@ -1,6 +1,66 @@
 """NetworkPrediction: requires max_cand_size, cands_hidden_size, vocab """
-import torch
+import torch, math
 import torch.nn.functional as F
+
+
+def inc_agraph(agraph, slice1, slice2):
+    """slice1 is number of nodes slice, slice2 is number of edges slice"""
+    num_nodes, num_neighbors = agraph.size()
+    msk1 = (agraph != -1).to(torch.int)
+    index_list = torch.arange(num_nodes).unsqueeze(1)
+    msk2_1d =  (((index_list >= slice1[:-1]) & (index_list < slice1[1:])).to(torch.int64)) @ (slice2[:-1].T)
+    msk2 = msk2_1d.unsqueeze(1).repeat(1, num_neighbors)
+    msk = msk1 * msk2
+    return agraph + msk
+
+
+def agg_agraph_info(agraph, edge_emb):
+    num_neighbors = agraph.shape[-1]
+    hidden_size = edge_emb.shape[-1]
+    bond_lookup_table = torch.cat((edge_emb, torch.zeros(1,hidden_size)))
+    agraph = agraph.clone().detach()
+    agraph[agraph == -1] = bond_lookup_table.shape[0]-1
+    return bond_lookup_table.index_select(0, agraph.view(-1)).view(-1,num_neighbors,hidden_size).sum(dim=1)
+
+
+# decoder_nll
+def token_discrete_loss(x_t, get_logits, input_ids):
+    logits = get_logits(x_t)  # bsz, seqlen, vocab
+    # print(logits.shape)
+    loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
+    decoder_nll = loss_fct(logits.reshape(-1, logits.size(-1)), input_ids.reshape(-1)).reshape(input_ids.shape)
+    # print(decoder_nll.shape)
+    decoder_nll = decoder_nll.mean(dim=-1)
+    return decoder_nll
+
+def mean_flat(tensor):
+    """
+    Take the mean over all non-batch dimensions.
+    """
+    return tensor.mean(dim=list(range(1, len(tensor.shape))))
+
+# from functools import cache
+# @cache
+def timestep_embedding(timesteps, dim, max_period=10000):
+    """
+    Create sinusoidal timestep embeddings.
+
+    :param timesteps: a 1-D Tensor of N indices, one per batch element.
+                      These may be fractional.
+    :param dim: the dimension of the output.
+    :param max_period: controls the minimum frequency of the embeddings.
+    :return: an [N x dim] Tensor of positional embeddings.
+    """
+    half = dim // 2
+    freqs = torch.exp(
+        -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+    ).to(device=timesteps.device)
+    args = timesteps[:, None].float() * freqs[None]
+    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+    if dim % 2:
+        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+    return embedding
+
 
 class NetworkPrediction:
     max_cand_size = None
