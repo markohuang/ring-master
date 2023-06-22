@@ -1,37 +1,36 @@
 """NetworkPrediction: requires max_cand_size, cands_hidden_size, vocab """
 import torch, math
 import torch.nn.functional as F
+from torch_geometric.utils import unbatch
+from torch.nn.utils.rnn import pad_sequence
+
+def pad_graph_data(tensor, batch, sequence_length, value=0):
+    unbatched = list(unbatch(tensor, batch))
+    unbatched[0] = F.pad(unbatched[0], (0,0,0,sequence_length-unbatched[0].shape[0]), value=value)
+    return pad_sequence(unbatched, batch_first=True, padding_value=value)
 
 
 def inc_agraph(agraph, slice1, slice2):
     """slice1 is number of nodes slice, slice2 is number of edges slice"""
+    device = agraph.device
     num_nodes, num_neighbors = agraph.size()
-    msk1 = (agraph != -1).to(torch.int)
-    index_list = torch.arange(num_nodes).unsqueeze(1)
-    msk2_1d =  (((index_list >= slice1[:-1]) & (index_list < slice1[1:])).to(torch.int64)) @ (slice2[:-1].T)
-    msk2 = msk2_1d.unsqueeze(1).repeat(1, num_neighbors)
+    msk1 = (agraph != -1).to(torch.int).to(device)
+    index_list = torch.arange(num_nodes).unsqueeze(1).to(device)
+    msk2_1d =  ((index_list >= slice1[:-1]) & (index_list < slice1[1:])).float() @ slice2[:-1, None].float()
+    msk2 = msk2_1d.repeat(1, num_neighbors)
     msk = msk1 * msk2
-    return agraph + msk
+    return (agraph + msk).long()
 
 
 def agg_agraph_info(agraph, edge_emb):
+    device = agraph.device
     num_neighbors = agraph.shape[-1]
     hidden_size = edge_emb.shape[-1]
-    bond_lookup_table = torch.cat((edge_emb, torch.zeros(1,hidden_size)))
+    bond_lookup_table = torch.cat((edge_emb, torch.zeros(1,hidden_size, device=device)))
     agraph = agraph.clone().detach()
     agraph[agraph == -1] = bond_lookup_table.shape[0]-1
     return bond_lookup_table.index_select(0, agraph.view(-1)).view(-1,num_neighbors,hidden_size).sum(dim=1)
 
-
-# decoder_nll
-def token_discrete_loss(x_t, get_logits, input_ids):
-    logits = get_logits(x_t)  # bsz, seqlen, vocab
-    # print(logits.shape)
-    loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
-    decoder_nll = loss_fct(logits.reshape(-1, logits.size(-1)), input_ids.reshape(-1)).reshape(input_ids.shape)
-    # print(decoder_nll.shape)
-    decoder_nll = decoder_nll.mean(dim=-1)
-    return decoder_nll
 
 def mean_flat(tensor):
     """
@@ -71,15 +70,13 @@ class NetworkPrediction:
         cls_pred: torch.Tensor, # [max_seq_length, num_cls]
         icls_pred: torch.Tensor, # [max_seq_length, num_icls]
         traversal_predictions: torch.Tensor, # [max_seq_length*2-1]
-        candidate_vector_nn: torch.nn.modules, # [hidden_size] -> [max_cand_size, cands_hidden_size]
-        candidate_nn: torch.nn.modules, # [max_cand_size, cands_hidden_size] -> [max_cand_size]
+        cand_nn: torch.nn.modules,
     ):
         self.tree_vec = tree_vec
         self.cls_pred = cls_pred
         self.icls_pred = icls_pred
         self.traversal_predictions = traversal_predictions
-        self.candidate_vector_nn = candidate_vector_nn
-        self.candidate_nn = candidate_nn
+        self.cand_nn = cand_nn
 
     @property
     def max_seq_length(self):
@@ -99,7 +96,7 @@ class NetworkPrediction:
         final_topk = []
         for i in range(topk):
             clab = cls_topk[i]
-            mask = NetworkPrediction.vocab.get_mask(clab)
+            mask = NetworkPrediction.vocab.get_mask(clab).to(cls_scores.device)
             masked_icls_scores = F.log_softmax(icls_scores + mask, dim=-1)
             icls_scores_topk, icls_topk = masked_icls_scores.topk(topk, dim=-1)
             topk_scores = cls_scores_topk[i].unsqueeze(-1) + icls_scores_topk
@@ -121,6 +118,4 @@ class NetworkPrediction:
         curr_cls_emb = self.tree_vec[curr_idx]
         fa_cls_emb = self.tree_vec[curr_idx-1]
         cands_input = fa_cls_emb + curr_cls_emb
-        cand_vecs = self.candidate_vector_nn(cands_input).\
-            reshape(NetworkPrediction.max_cand_size, NetworkPrediction.cands_hidden_size)
-        return self.candidate_nn(cand_vecs).squeeze()
+        return self.cand_nn(cands_input)

@@ -14,7 +14,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from datetime import datetime
 from argparse import Namespace
 
-config_path = Path(__file__).parent.parent.parent.absolute() / 'configs' / 'mof_config.toml'
+config_path = Path(__file__).parent.parent.parent.absolute() / 'configs' / 'oled_config.toml'
 cfg = toml.load(str(config_path))
 
 run_name = datetime.now().strftime("run_%m%d_%H_%M")
@@ -80,9 +80,9 @@ def setup_experiment(cfg):
     NetworkPrediction.cands_hidden_size = trainingparams['cands_hidden_size']
     return motif_vocab
 
-
+from ringmaster.custom_callbacks import GenerateOnValidationCallback
 callbacks = [
-    # GenerateOnValidationCallback(params.setup_parameters.generated_output_file),
+    GenerateOnValidationCallback(),
     EarlyStopping(monitor="val/loss", mode="min", patience=3),
     LearningRateMonitor(logging_interval='step'),
     ModelCheckpoint(

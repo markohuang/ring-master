@@ -24,7 +24,8 @@ def pad_tensor(tensor, pad_length):
 
 def my_collator(batch, max_atom_neighbor, max_motif_neighbor):
     graph_list = []
-    for smiles in batch['text']:
+    smiles_list = [ b['text'] for b in batch ]
+    for smiles in smiles_list:
         parser = MolParser(smiles)
         mol_tree, mol_graph, traversal_order = parser.tensors
 
@@ -63,23 +64,24 @@ def my_collator(batch, max_atom_neighbor, max_motif_neighbor):
 
 collate_fn = partial(
     my_collator,
-    max_atom_neighbor=cfg['setupparams']['max_atom_neighbor'],
-    max_motif_neighbor=cfg['setupparams']['max_motif_neighbor']
+    max_atom_neighbor=cfg['setupparams']['max_atom_neighbors'],
+    max_motif_neighbor=cfg['setupparams']['max_motif_neighbors']
 )
 
 
 if __name__ == "__main__":
-    dataset = Dataset.from_text(cfg['setupparams']['smiles_path'])
-    trainset, valset = dataset.train_test_split(test_size=0.1)
+    dataset = Dataset.from_text(cfg['setupparams']['smiles_path']).train_test_split(test_size=0.1)
+    trainset = dataset['train']
+    valset = dataset['test']
     tloader = DataLoader(
         trainset,
-        num_workers=cpu_count(),
+        # num_workers=cpu_count(),
         batch_size=cfg['trainingparams']['batch_size'],
         collate_fn=collate_fn,
     )
     vloader = DataLoader(
         valset,
-        num_workers=cpu_count(),
+        # num_workers=cpu_count(),
         batch_size=cfg['trainingparams']['batch_size'],
         collate_fn=collate_fn,
     )
@@ -99,7 +101,7 @@ if __name__ == "__main__":
             model_path = os.path.join(model_path, os.listdir(model_path)[0])
         model = DiffusionTransformer.load_from_checkpoint(model_path)
     else:
-        model = DiffusionTransformer(cfg)
+        model = DiffusionTransformer(cfg, vocab)
 
     trainer = pl.Trainer(
         callbacks=callbacks,

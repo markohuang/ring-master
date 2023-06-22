@@ -229,7 +229,7 @@ class MolParser:
                 inter_label=inter_label,
                 label=(smiles, ismiles) if len(cls) > 1 else (smiles, smiles),
                 cluster=cls,
-                assm_cands=-1,
+                assm_cands=-100,
             ))
             if (fa_cls_idx == 0 and first_time) or (fa_cls_idx >= 0 and len(self.clusters[ fa_cls_idx ]) > 2): #uncertainty occurs in assembly
                 first_time = False

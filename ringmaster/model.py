@@ -11,13 +11,14 @@ from diffusers import *
 from typing import *
 
 from ringmaster.nn_utils import (
+    NetworkPrediction,
+    pad_graph_data,
     inc_agraph,
     agg_agraph_info,
-    token_discrete_loss,
     mean_flat,
-    timestep_embedding
+    timestep_embedding,
 )
-
+from ringmaster.timberwright import decode
 from torch_geometric.nn import GPSConv, GINEConv, global_add_pool
 
 # model imports
@@ -28,58 +29,28 @@ from transformers.models.bert.modeling_bert import (
 )
 
 
-class PretrainedEmbedding(nn.Module):
-    def __init__(
-        self,
-        embed_mat: Literal["vocab", "embed"],
-        use_normalization: bool = True,
-        freeze: bool = False,
-    ):
+class TopoNN(nn.Module):
+    def __init__(self, hs, ts, num_heads=1) -> None:
         super().__init__()
-        self.use_normalization = use_normalization
-        _, embed_dim = embed_mat.shape
-        self.scale = math.sqrt(embed_dim)  # √D
-        self.embed = nn.Embedding.from_pretrained(
-            embed_mat.detach().clone(), freeze=freeze
+        self.topo_query = nn.Parameter(torch.randn(ts, hs))
+        self.topo_attn = nn.MultiheadAttention(
+            embed_dim=hs,
+            num_heads=num_heads,
+            batch_first=True
         )
+        self.out_proj = nn.Sequential(nn.Linear(hs,1), nn.Sigmoid())
 
-    def forward(
-        self, x: Literal["batch", "vocab"]
-    ) -> Literal["batch", "embed"]:
-        embeds = self.embed(x)
-        if self.use_normalization:
-            embeds = F.normalize(embeds, p=2, dim=-1) * self.scale
-        return embeds
-
-
-class PretrainedUnembedding(nn.Module):
-    def __init__(
-        self,
-        embed_mat: Literal["vocab", "embed"],
-        use_renormalization: bool = True,
-    ):
-        super().__init__()
-        self.renormalize = use_renormalization
-        vocab_size, embed_dim = embed_mat.shape
-        # LM head style scoring
-        self.unembed = nn.Linear(embed_dim, vocab_size, bias=False)
-        with torch.no_grad():
-            self.unembed.weight.copy_(embed_mat.detach().clone())
-
-    def forward(
-        self, x: Literal["batch", "pos", "dim"]
-    ) -> Literal["batch", "pos", "vocab"]:
-        # CDCD Framework: Apply L2-normalisation to the embedding estimate
-        # before calculating the score estimate (__renormalisation__)
-        if self.renormalize:
-            x = F.normalize(x, p=2, dim=-1)
-        return self.unembed(x)
+    def forward(self, key):
+        bs = key.shape[0]
+        query = self.topo_query.expand(bs,-1,-1)
+        attn_output, _ = self.topo_attn(query, key, key)
+        return self.out_proj(attn_output)
 
 
 class RingsNet(nn.Module):
     def __init__(self, params, vocab) -> None:
         super().__init__()
-        self.hyperparams = Namespace(**params['hyperparams'])
+        self.hyperparams = Namespace(**params['trainingparams'])
         self.setupparams = Namespace(**params['setupparams'])
         self.vocab = vocab
         self.hidden_size = self.hyperparams.hidden_size
@@ -94,41 +65,6 @@ class RingsNet(nn.Module):
             attention_probs_dropout_prob=self.hyperparams.dropout_p,
             use_cache=False,
         )
-        # marko/apr17: use pretrained chemberta embeddings
-        # self.embedder = BertEmbeddings(self.bertconfig)
-        # if self.setupparams.use_chemberta:
-        #     embed_mat, embed_dim = extract_chemberta_embed_mat(self.setupparams.cwd)
-        # else:
-        #     embed_mat = nn.Embedding(self.setupparams.vocab_size, self.hyperparams.hidden_size)
-        #     embed_mat.weight.data.normal_(mean=0.0, std=BertConfig().initializer_range)
-        #     embed_mat, embed_dim = embed_mat.weight, self.hyperparams.hidden_size
-
-        # # Discrete-to-continuous fixed read-in matrix: E ϵ Rⱽˣᴰ
-        # self.read_in = nn.Sequential(
-        #     PretrainedEmbedding(embed_mat, use_normalization=True, freeze=True),
-        #     *[
-        #         # Bottleneck layer to shrink word embeddings: D → D'
-        #         nn.Linear(embed_dim, self.hyperparams.hidden_size),
-        #         nn.LayerNorm(self.hyperparams.hidden_size),
-        #     ]
-        #     if self.hyperparams.hidden_size != embed_dim
-        #     else [nn.Identity()],
-        # )
-        # # Continous-to-discrete learnable read-out matrix as an LM head
-        # self.read_out = nn.Sequential(
-        #     *[
-        #         # "Add a linear output projection layer E′ which takes the output of
-        #         # the transformer y ∈ Rᴺˣᴰ and projects each element (yᵢ) 1 ≤ i ≤ N
-        #         # back to the same size as the word embeddings, `embed_dim`."
-        #         nn.Linear(self.hyperparams.hidden_size, embed_dim),
-        #         nn.LayerNorm(embed_dim),
-        #     ]
-        #     if self.hyperparams.hidden_size != embed_dim
-        #     else [nn.Identity()],
-        #     # Initalize read-out (R) to: Eᵀ ϵ Rᴰˣⱽ
-        #     PretrainedUnembedding(embed_mat, use_renormalization=False),
-        # )  # E′
-        
 
         # marko/jun19: stuff for graph tensor message passing
         atom_vocab_size = params['setupparams']['atom_vocab'].size()
@@ -139,26 +75,27 @@ class RingsNet(nn.Module):
             nn.Linear(self.hidden_size, self.hidden_size),
             nn.ReLU(),
             nn.Linear(self.hidden_size, self.hidden_size),
-        )
-        self.atom_gat = GPSConv(self.hidden_size, GINEConv(seq_nn), heads=4)
-        self.motif_gat = GPSConv(self.hidden_size, GINEConv(seq_nn), heads=4)
-        self.atom_type_embedder = nn.Embedding(atom_vocab_size, self.hidden_size)
-        self.bond_type_embedder = nn.Embedding(bond_list_size, self.hidden_size)
-        self.child_num_embedder = nn.Embedding(max_motif_neighbors, self.hidden_size)
-        max_cand_size = params['setupparams']['max_cand_size']
-        cands_hidden_size = params['hyperparams']['cands_hidden_size']
-        sequence_length = params['setupparams']['max_length']
-        topo_size = (sequence_length - 1) * 2
-        dropout = params['hyperparams']['dropout_p']
-        self.motif_type_embedder = nn.Embedding(motif_vocab_size, self.hidden_size)
-        self.imotif_type_embedder = nn.Embedding(imotif_vocab_size, self.hidden_size)
-        self.motif_edge_attr_embedder = nn.Embedding(max_motif_neighbors, self.hidden_size)
-        self.candvec_nn = nn.Linear(self.hidden_size, max_cand_size*cands_hidden_size)
-        self.cand_nn = nn.Linear(cands_hidden_size, 1) # output shape (max_cand_size, 1)
-        self.topoNN = nn.Sequential(
-            nn.Linear(self.hidden_size, topo_size),
-            nn.Sigmoid()
-        )
+        ).requires_grad_(False)
+        self.atom_gat = GPSConv(self.hidden_size, GINEConv(seq_nn), heads=4).requires_grad_(False)
+        self.motif_gat = GPSConv(self.hidden_size, GINEConv(seq_nn), heads=4).requires_grad_(False)
+        self.atom_type_embedder = nn.Embedding(atom_vocab_size, self.hidden_size).requires_grad_(False)
+        self.bond_type_embedder = nn.Embedding(bond_list_size, self.hidden_size).requires_grad_(False)
+        self.child_num_embedder = nn.Embedding(max_motif_neighbors, self.hidden_size).requires_grad_(False)
+        self.max_cand_size = params['setupparams']['max_cand_size']
+        self.sequence_length = params['setupparams']['max_length']
+        self.topo_size = self.sequence_length * 2 - 1
+        dropout = params['trainingparams']['dropout_p']
+        self.motif_type_embedder = nn.Embedding(motif_vocab_size, self.hidden_size//2).requires_grad_(False)
+        self.imotif_type_embedder = nn.Embedding(imotif_vocab_size, self.hidden_size//2).requires_grad_(False)
+        self.motif_edge_attr_embedder = nn.Embedding(max_motif_neighbors, self.hidden_size).requires_grad_(False)
+        # self.candvec_nn = nn.Linear(self.hidden_size, max_cand_size*cands_hidden_size)
+        # self.cand_nn = nn.Linear(cands_hidden_size, 1) # output shape (max_cand_size, 1)
+        self.cand_nn = nn.Linear(self.hidden_size, self.max_cand_size)
+        self.topoNN = TopoNN(self.hidden_size, self.topo_size, num_heads=2)
+        # self.topoNN = nn.Sequential(
+        #     nn.Linear(self.hidden_size, self.topo_size),
+        #     nn.Sigmoid()
+        # )
         self.clsNN = nn.Sequential(
                 nn.Dropout(dropout),
                 nn.Linear(self.hidden_size, motif_vocab_size)
@@ -169,8 +106,7 @@ class RingsNet(nn.Module):
         )
 
 
-
-
+        # stuff for denoising transformer
         self.encoder = BertEncoder(self.bertconfig)
 
         self.in_channels = self.hidden_size * 2
@@ -214,47 +150,73 @@ class RingsNet(nn.Module):
             module.weight.data.normal_(mean=0.0, std=self.bertconfig.initializer_range)
             if module.bias is not None:
                 module.bias.data.zero_()
-        # elif isinstance(module, nn.Embedding):
-        #     module.weight.data.normal_(mean=0.0, std=self.bertconfig.initializer_range)
-        #     if module.padding_idx is not None:
-        #         module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=self.bertconfig.initializer_range)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
         elif isinstance(module, nn.LayerNorm):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
     
     
-    def encode_molecule(self, graph_data):
+    def encode_molecule(self, graph_data, slices):
         # atom message passing
+        device = graph_data['atoms'].atom_type.device
+        gbatch, tbatch = graph_data['atoms'].batch, graph_data['motif'].batch
         atom_emb = self.atom_type_embedder(graph_data['atoms'].atom_type)
         bond_emb = self.bond_type_embedder(graph_data['atoms'].bond_type)
         n_child_emb = self.child_num_embedder(graph_data['atoms'].n_child)
-        atom_pos_emb = agg_agraph_info(graph_data['atoms'].agraph, bond_emb)
-        x = atom_emb + atom_pos_emb
-        edge_index = graph_data['atoms', 'connect', 'atoms'].edge_index.long()
-        edge_attr = bond_emb + n_child_emb
-        atom_node_emb = self.atom_gat(x, edge_index, edge_attr=edge_attr)
-        # motif message passing
-        x = graph_data["motif", "contains", "atoms"].edge_index
-        motif_emb = torch.zeros(graph_data['motif'].num_nodes, self.hidden_size)
-        for motif_idx in x[:,0]:
-            motif_emb[motif_idx,:] += atom_node_emb[x[motif_idx,1]]
-        motif_emb += self.motif_type_embedder(graph_data['motif'].cls)
-        motif_emb += self.imotif_type_embedder(graph_data['motif'].icls)
-        motif_edge_emb = self.motif_edge_attr_embedder(graph_data['motif'].edge_attr)
-        motif_pos_emb = agg_agraph_info(graph_data['motif'].agraph, motif_edge_emb)
+        graph_agraph = inc_agraph(
+            graph_data['atoms'].agraph,
+            slices['atoms']['agraph'],
+            slices['atoms']['bond_type'],
+        )
+        atom_pos_emb = agg_agraph_info(graph_agraph, bond_emb)
+        atom_node_emb = self.atom_gat(
+            x          = (atom_emb+atom_pos_emb),
+            edge_index = graph_data['atoms', 'connect', 'atoms'].edge_index.long(),
+            batch      = gbatch,
+            edge_attr  = (bond_emb+n_child_emb)
+        )
 
-        x = motif_emb + motif_pos_emb
-        edge_index = graph_data['motif', 'connect', 'motif'].edge_index.long()
-        edge_attr = motif_edge_emb
-        return self.motif_gat(x, edge_index, edge_attr=edge_attr)
+        # sum over atom embeddings to get motif embeddings
+        motif_idx, atom_idx = graph_data["motif", "contains", "atoms"].edge_index
+        motif_emb = torch.zeros(graph_data['motif'].num_nodes, self.hidden_size, device=device)
+        motif_emb.scatter_add_(0, motif_idx.unsqueeze(1).expand(-1,self.hidden_size), atom_node_emb[atom_idx])
+        # for loop version of the above code
+        # x = graph_data["motif", "contains", "atoms"].edge_index.T
+        # motif_emb = torch.zeros(graph_data['motif'].num_nodes, self.hidden_size, device=device)
+        # for atom_idx, motif_idx in enumerate(x[:,0]):
+        #     motif_emb[motif_idx] += atom_node_emb[x[atom_idx,1]]
+        motif_emb += torch.cat((
+            self.motif_type_embedder(graph_data['motif'].cls),
+            self.imotif_type_embedder(graph_data['motif'].icls)
+        ), dim=-1)
+        motif_edge_emb = self.motif_edge_attr_embedder(graph_data['motif'].edge_attr)
+        tree_agraph = inc_agraph(
+            graph_data['motif'].agraph,
+            slices['motif']['agraph'],
+            slices['motif']['edge_attr'],
+        )
+        motif_pos_emb = agg_agraph_info(tree_agraph, motif_edge_emb)
+        tree_vec = self.motif_gat(
+            x          = (motif_emb + motif_pos_emb),
+            edge_index = graph_data['motif', 'connect', 'motif'].edge_index.long(),
+            batch      = tbatch,
+            edge_attr  = motif_edge_emb
+        ) # (bs*sq_len, hidden_size)
+        tree_vec = nn.functional.normalize(tree_vec)
+        # pad first to be max_seq_length
+        return pad_graph_data(tree_vec, tbatch, self.sequence_length)
 
 
     def decode_molecule(self, tree_vec):
-        # TODO: need to check batch
-        topo_vec = global_add_pool(tree_vec, batch)
-        topo_pred = self.topoNN(topo_vec)
-        cls_pred = self.clsNN(tree_vec)
-        icls_pred = self.iclsNN(tree_vec)
+        cls_pred = self.clsNN(tree_vec) # (bs, seq_len, cls_vocab_size)
+        icls_pred = self.iclsNN(tree_vec) # (bs, seq_len, icls_vocab_size)
+        topo_pred = self.topoNN(tree_vec) # (bs, hidden_size)
+        cands_input = tree_vec[:,:-1,:] + tree_vec[:,1:,:]
+        assm_pred = self.cand_nn(cands_input)
+        return cls_pred, icls_pred, assm_pred, topo_pred
 
 
     def forward(self, x_t, t, conditional=None):
@@ -286,20 +248,21 @@ class DiffusionTransformer(pl.LightningModule):
     def __init__(self, params, vocab):
         super().__init__()
         self._starttime = None
-        self.hyperparams = Namespace(**params['hyperparams'])
+        self.hyperparams = Namespace(**params['trainingparams'])
         self.setupparams = Namespace(**params['setupparams'])
-        self.setupparams.vocab_size = vocab.vocab_size
         self.vocab = vocab
         self.timesteps = self.hyperparams.timesteps
         self.save_hyperparameters()
         self.model = RingsNet(params, vocab)
+        self.ce_loss = torch.nn.CrossEntropyLoss(reduction='none')
+        self.bce_loss = torch.nn.BCEWithLogitsLoss(reduction='none')
         prediction_type = "sample"
-        self.noise_scheduler = DPMSolverMultistepScheduler(
+        self.noise_scheduler = DDPMScheduler(
             num_train_timesteps=self.timesteps,
             prediction_type=prediction_type
         )
 
-    def denoise_sample(self, bs, num_inference_steps=200, skip_special_tokens=False):
+    def denoise_sample(self, bs, num_inference_steps=100, skip_special_tokens=False):
         latent_size = self.hyperparams.hidden_size
         latents_shape = (bs, self.setupparams.max_length, latent_size)
         latents = torch.randn(latents_shape, device=self.device)
@@ -317,14 +280,18 @@ class DiffusionTransformer(pl.LightningModule):
             # compute the previous noisy sample x_t -> x_t-1
             latents = self.noise_scheduler.step(noise_pred, t, latents).prev_sample
 
-        logits = self.model.read_out(latents)  # bsz, seqlen, vocab
-        cands = torch.topk(logits, k=1, dim=-1)
-        sample = cands.indices
-        generated_string = []
-        for seq in sample:
-            tokens = self.tokenizer.decode(seq.squeeze(-1), skip_special_tokens=skip_special_tokens)
-            generated_string.append(tokens)
-        return generated_string
+        predicted_smiles = []
+        payload = self.model.decode_molecule(latents)
+        for tree_vec, cls_pred, icls_pred, traversal_order in zip(*payload):
+            networkprediction = NetworkPrediction(
+                tree_vec=tree_vec,
+                cls_pred=cls_pred,
+                icls_pred=icls_pred,
+                traversal_predictions=traversal_order.squeeze(),
+                cand_nn=self.model.cand_nn,
+            )
+            predicted_smiles.append(decode(networkprediction).smiles)
+        return predicted_smiles
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.model.parameters(), lr=self.hyperparams.lr)
@@ -338,8 +305,8 @@ class DiffusionTransformer(pl.LightningModule):
         #     conditionals = batch['conditionals']
         # else:
         #     conditionals = None
-        x_embeds = self.model.encode_molecule(graph_data)
-        bs = x_embeds.shape[0]
+        x_embeds = self.model.encode_molecule(graph_data, slices) # TODO: morph back into shape (bs, seq_len, hidden_size)
+        self.bs = bs = x_embeds.shape[0]
 
         noise = torch.randn(x_embeds.shape).to(x_embeds.device)
         timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bs,), device=x_embeds.device).long()
@@ -355,21 +322,53 @@ class DiffusionTransformer(pl.LightningModule):
                 prev_output = self.model(torch.cat((x_t, prev_output), dim=-1), timesteps, conditionals).detach()
         # model_output = self.model(x_t, timesteps)
         model_output = self.model(torch.cat((x_t, prev_output), dim=-1), timesteps, conditionals)
-        decoder_nll = token_discrete_loss(model_output, self.model.read_out, input_ids)
+        decoder_nll = self.token_discrete_loss(model_output, graph_data, slices)
         lsimple = mean_flat((x_embeds - model_output) ** 2)
         # marko/may16: try tweeking the weight
         loss = lsimple + 2 * decoder_nll
         return loss.mean()
+    
+    # decoder_nll
+    def token_discrete_loss(self, tree_vec, graph_data, slices):
+        cls_pred, icls_pred, assm_pred, topo_pred = self.model.decode_molecule(tree_vec)
+        batch = graph_data['motif'].batch
+        def prep_labels(labels, batch=batch, seq_length=self.model.sequence_length):
+            return pad_graph_data(labels[:,None], batch, seq_length, -100).squeeze().long()
+        cls_label = prep_labels(graph_data['motif'].cls)
+        icls_label = prep_labels(graph_data['motif'].icls)
+        assm_label = prep_labels(graph_data['motif'].assm_cands)
+        ptr = graph_data['motif'].ptr
+        num_nodes = ptr[1:]-ptr[:-1]
+        batch_num = torch.arange(num_nodes.shape[0]).to(ptr.device)
+        topo_batch = torch.repeat_interleave(batch_num, (num_nodes*2-1), dim=0)
+        topo_label = prep_labels(graph_data['motif'].order, topo_batch, self.model.topo_size)
+        def calculate_loss(logits, labels):
+            return self.ce_loss(
+                logits.reshape(-1, logits.size(-1)),
+                labels.reshape(-1)
+            ).reshape(labels.shape).mean(dim=-1)
+        def calculate_bce_loss(logits, labels):
+            msk = (labels != -100).long()
+            loss = self.bce_loss(
+                logits.view(-1),
+                (labels*msk).view(-1).float()
+            ).reshape(labels.shape)
+            return (loss*msk).mean(dim=-1)
+        cls_loss = calculate_loss(cls_pred, cls_label)
+        icls_loss = calculate_loss(icls_pred, icls_label)
+        assm_loss = calculate_loss(assm_pred, assm_label[:,1:])
+        topo_loss = calculate_bce_loss(topo_pred, topo_label)
+        return cls_loss + icls_loss + assm_loss + topo_loss
 
     def training_step(self, batch, batch_idx):
         loss = self.get_loss(batch, batch_idx)    
-        self.log("train/loss", loss, on_step=True, sync_dist=True)
+        self.log("train/loss", loss, batch_size=self.bs, on_step=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         # print("embedder weight", self.model.embedder.word_embeddings.weight.sum().item())
         loss = self.get_loss(batch, batch_idx)
-        self.log("val/loss", loss, on_step=True, sync_dist=True)
+        self.log("val/loss", loss, batch_size=self.bs, on_step=True, sync_dist=True)
 
     def on_train_start(self):
         self._starttime = time.monotonic()

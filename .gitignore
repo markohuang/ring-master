@@ -8,3 +8,7 @@ slurm-outputs/
 test*
 *.ipynb
 deprecated/
+lightning_logs/
+*.txt
+wandb/
+*.pkl
