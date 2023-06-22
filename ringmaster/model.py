@@ -28,6 +28,10 @@ from transformers.models.bert.modeling_bert import (
     BertEmbeddings
 )
 
+from rdkit import RDLogger
+lg = RDLogger.logger() 
+lg.setLevel(RDLogger.CRITICAL)
+
 
 class TopoNN(nn.Module):
     def __init__(self, hs, ts, num_heads=1) -> None:
@@ -282,12 +286,12 @@ class DiffusionTransformer(pl.LightningModule):
 
         predicted_smiles = []
         payload = self.model.decode_molecule(latents)
-        for tree_vec, cls_pred, icls_pred, traversal_order in zip(*payload):
+        for tree_vec, cls_pred, icls_pred, _, topo_pred in zip(latents,*payload):
             networkprediction = NetworkPrediction(
                 tree_vec=tree_vec,
                 cls_pred=cls_pred,
                 icls_pred=icls_pred,
-                traversal_predictions=traversal_order.squeeze(),
+                traversal_predictions=topo_pred.squeeze(),
                 cand_nn=self.model.cand_nn,
             )
             predicted_smiles.append(decode(networkprediction).smiles)
@@ -295,7 +299,7 @@ class DiffusionTransformer(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.model.parameters(), lr=self.hyperparams.lr)
-        scheduler = get_cosine_schedule_with_warmup(optimizer, self.hyperparams.warmup_steps, self.hyperparams.warmup_steps*10)
+        scheduler = get_cosine_schedule_with_warmup(optimizer, self.hyperparams.warmup_steps, self.hyperparams.warmup_steps*2)
         return [optimizer], {"scheduler": scheduler, "interval": "step"}
         # return optimizer
 

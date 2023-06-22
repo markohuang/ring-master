@@ -57,7 +57,7 @@ class PairVocab(object):
     def get_mask(self, cls_idx):
         if type(cls_idx) is torch.Tensor:
             self.mask = self.mask.to(cls_idx.device)
-        return self.mask.index_select(index=cls_idx, dim=0)
+        return self.mask[cls_idx]
 
     def get_inter_size(self, icls_idx):
         return self.inter_size[icls_idx]

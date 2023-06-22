@@ -74,6 +74,8 @@ class MolParser:
     def __init__(self, smiles: str) -> None:
         self.smiles = smiles
         self.mol = get_mol(smiles)
+        assert self.mol is not None, print(f'Invalid SMILES: {smiles}')
+        self.n_atoms = self.mol.GetNumAtoms()
         self.father_of, self.order = self.update_tree_order()
         self.label_tree()
     
@@ -84,10 +86,6 @@ class MolParser:
             mol_graph=tensorize(self.graph, vocab=self.atom_vocab, is_motif=False),
             order=torch.IntTensor(self.order)
         )
-
-    @cached_property
-    def n_atoms(self):
-        return self.mol.GetNumAtoms()
     
     @cached_property
     def clusters(self):

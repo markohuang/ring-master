@@ -45,8 +45,8 @@ def my_collator(batch, max_atom_neighbor, max_motif_neighbor):
         hierGraph["motif"].cls = mol_tree.fnode[:,0]
         hierGraph["motif"].icls = mol_tree.fnode[:,1]
         hierGraph["motif"].agraph = pad_tensor(mol_tree.agraph, max_motif_neighbor)
-        hierGraph["motif", "connect", "motif"].edge_index = (mol_tree.fmess[:,:2]).T
-        hierGraph["motif"].edge_attr = mol_tree.fmess[:,2]
+        hierGraph["motif", "connect", "motif"].edge_index = (mol_tree.fmess[:,:2]).T if len(mol_tree.fmess) > 0 else mol_tree.fmess
+        hierGraph["motif"].edge_attr = mol_tree.fmess[:,2] if len(mol_tree.fmess) > 0 else mol_tree.fmess
         hierGraph["motif"].num_nodes = mol_tree.fnode.shape[0]
         hierGraph["motif"].assm_cands = mol_tree.assm_cands
         hierGraph["motif"].order = traversal_order
@@ -75,15 +75,17 @@ if __name__ == "__main__":
     valset = dataset['test']
     tloader = DataLoader(
         trainset,
-        # num_workers=cpu_count(),
+        num_workers=cpu_count(),
         batch_size=cfg['trainingparams']['batch_size'],
         collate_fn=collate_fn,
+        shuffle=True,
     )
     vloader = DataLoader(
         valset,
-        # num_workers=cpu_count(),
+        num_workers=cpu_count(),
         batch_size=cfg['trainingparams']['batch_size'],
         collate_fn=collate_fn,
+        shuffle=True,
     )
 
     torch.set_float32_matmul_precision('medium') # as per warning
@@ -109,7 +111,8 @@ if __name__ == "__main__":
         **{k: cfg['trainingparams'][k] for k in (
             'accelerator',
             'max_epochs',
-            'val_check_interval',
+            'check_val_every_n_epoch',
+            # 'val_check_interval',
         )}
     )
     trainer.fit(model, tloader, vloader)
