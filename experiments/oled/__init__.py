@@ -91,10 +91,11 @@ callbacks = [
         every_n_train_steps=5000,
         save_top_k=3,
     ),
-    # GeneratePlots(),
-    # ScreenValidSmiles(1000),
 ]
-# tloader, vloader = setup_dataloader(params.hyperparameters, dataset, use_multiprocessing=True)
 
+from datasets import Dataset
+dataset = Dataset.from_text(cfg['setupparams']['smiles_path']).train_test_split(test_size=0.1)
+trainset = dataset['train']
+valset = dataset['test']
 
-__all__ = ['cfg', 'setup_experiment', 'callbacks']
+__all__ = ['cfg', 'setup_experiment', 'callbacks', 'trainset', 'valset']

@@ -1,29 +1,30 @@
 [setupparams]
 vocab_path='vocab.txt'
 smiles_path='smiles.txt'
+dataset_key='text'
 max_cand_size=12 # arbitrary
 max_atom_neighbors=4 # arbitrary
 max_motif_neighbors=8 # arbitrary
-max_length=50 # arbitrary
+max_length=69 # arbitrary
 
 
 [trainingparams]
 cands_hidden_size=24
 hidden_size=48
-batch_size=16
+batch_size=256
 # training setup
-warmup_steps=10000
+warmup_steps=750
 # bert (i.e. denoiser) config
 variance_schedule="cosine"
 position_embedding_type="relative_key"
 variance_scale=1.0
-num_hidden_layers=6
+num_hidden_layers=12
 hidden_hidden_size=384
 intermediate_size=768
 num_heads=12
 dropout_p=0.1
 gradient_clip=1.0
-lr=5e-4 # 5e-05
+lr=2e-4 # 5e-05
 # diffusion config
 self_cond=true
 time_channels=128
@@ -35,7 +36,9 @@ out_channel=16
 # for pl.Trainer
 max_epochs=300
 accelerator="auto"
-val_check_interval=50
+# val_check_interval=2000
+check_val_every_n_epoch=1
+accumulate_grad_batches=8
 # enable_progress_bar=true
 # devices=1
 # log_every_n_steps=1

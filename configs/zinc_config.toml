@@ -1,0 +1,46 @@
+[setupparams]
+name="zinc250k"
+vocab_path='zinc_vocab.txt'
+smiles_path='zinc_smiles.txt'
+csv_path='zinc250k.csv'
+dataset_key='text'
+max_cand_size=40 # arbitrary
+max_atom_neighbors=4 # arbitrary
+max_motif_neighbors=8 # arbitrary
+max_length=50 # arbitrary
+
+
+[trainingparams]
+cands_hidden_size=24
+hidden_size=48
+batch_size=512
+# training setup
+warmup_steps=1500
+# bert (i.e. denoiser) config
+variance_schedule="cosine"
+position_embedding_type="relative_key"
+variance_scale=1.0
+num_hidden_layers=12
+hidden_hidden_size=768
+intermediate_size=768
+num_heads=12
+dropout_p=0.1
+gradient_clip=1.0
+lr=1e-4 # 5e-05
+# diffusion config
+self_cond=true
+time_channels=128
+timesteps=1000
+noise_schedule="sqrt"
+dropout=0.1
+in_channel=16
+out_channel=16
+# for pl.Trainer
+max_epochs=300
+accelerator="auto"
+# val_check_interval=2000
+check_val_every_n_epoch=1
+# accumulate_grad_batches=8
+# enable_progress_bar=true
+# devices=1
+# log_every_n_steps=1

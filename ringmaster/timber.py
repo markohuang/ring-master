@@ -83,12 +83,14 @@ class MotifNode:
             anchor_smiles = [get_anchor_smiles(mol, a, idxfunc) for a in anchors]
             is_symmetric = anchor_smiles[0] == anchor_smiles[1]
         elif num_attach_points > 0:
-            anchors = [a for a in attach_points if is_anchor(mol.GetAtomWithIdx(a), [0])] #all attach points are labeled with 1
+            inter_atoms = [idxfunc(a) for a in mol.GetAtoms() if a.GetAtomMapNum() > 0]
+            anchors = [a for a in attach_points if is_anchor(mol.GetAtomWithIdx(a), inter_atoms, idxfunc=idxfunc)] #all attach points are labeled with 1
+            # assert len(anchors) == 2, f"attach points: {attach_points}, anchors: {anchors}, smiles: {self.ismiles}"
             attach_points = [a for a in attach_points if a not in anchors]
             attach_points = [anchors[0]] + attach_points + [anchors[1]] #force the attach_points to be a chain like anchor ... anchor
             anchor_smiles = [get_anchor_smiles(mol, a, idxfunc) for a in anchors]
             is_symmetric = anchor_smiles[0] == anchor_smiles[1]
-        assert len(anchors) <= 2
+        assert len(anchors) <= 2, f"attach points: {attach_points}, anchors: {anchors}, smiles: {self.ismiles}"
         attach_point_atoms = [mol.GetAtomWithIdx(a) for a in attach_points]
         return MotifAttachmenInfo(
             is_symmetric=is_symmetric,

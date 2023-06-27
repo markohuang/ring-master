@@ -1,30 +1,28 @@
 import os
 import torch
 import torch.nn.functional as F
-import networkx as nx
 from torch.utils.data import DataLoader
 from functools import partial
 from torch_geometric.data import HeteroData
 from torch_geometric.data.collate import collate
-from datasets import Dataset
 from multiprocessing import cpu_count
 
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import CSVLogger
+# from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.loggers import WandbLogger
 
-from experiments.oled import cfg, setup_experiment, callbacks
+from experiments.zinc250k import cfg, setup_experiment, callbacks
 from ringmaster.lumberjack import MolParser
 from ringmaster.model import DiffusionTransformer
-vocab = setup_experiment(cfg)
-
+vocab, trainset, valset = setup_experiment(cfg)
+pl.seed_everything(cfg['setupparams'].get('seed', 42))
 
 def pad_tensor(tensor, pad_length):
     return F.pad(tensor, (0,pad_length-tensor.shape[1]), value=-1)
 
-def my_collator(batch, max_atom_neighbor, max_motif_neighbor):
+def my_collator(batch, max_atom_neighbor, max_motif_neighbor, key):
     graph_list = []
-    smiles_list = [ b['text'] for b in batch ]
+    smiles_list = [ b[key] for b in batch ]
     for smiles in smiles_list:
         parser = MolParser(smiles)
         mol_tree, mol_graph, traversal_order = parser.tensors
@@ -65,14 +63,13 @@ def my_collator(batch, max_atom_neighbor, max_motif_neighbor):
 collate_fn = partial(
     my_collator,
     max_atom_neighbor=cfg['setupparams']['max_atom_neighbors'],
-    max_motif_neighbor=cfg['setupparams']['max_motif_neighbors']
+    max_motif_neighbor=cfg['setupparams']['max_motif_neighbors'],
+    key=cfg['setupparams']['dataset_key'],
 )
 
 
 if __name__ == "__main__":
-    dataset = Dataset.from_text(cfg['setupparams']['smiles_path']).train_test_split(test_size=0.1)
-    trainset = dataset['train']
-    valset = dataset['test']
+
     tloader = DataLoader(
         trainset,
         num_workers=cpu_count(),
@@ -85,7 +82,6 @@ if __name__ == "__main__":
         num_workers=cpu_count(),
         batch_size=cfg['trainingparams']['batch_size'],
         collate_fn=collate_fn,
-        shuffle=True,
     )
 
     torch.set_float32_matmul_precision('medium') # as per warning

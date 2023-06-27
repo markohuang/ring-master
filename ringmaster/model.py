@@ -80,8 +80,8 @@ class RingsNet(nn.Module):
             nn.ReLU(),
             nn.Linear(self.hidden_size, self.hidden_size),
         ).requires_grad_(False)
-        self.atom_gat = GPSConv(self.hidden_size, GINEConv(seq_nn), heads=4).requires_grad_(False)
-        self.motif_gat = GPSConv(self.hidden_size, GINEConv(seq_nn), heads=4).requires_grad_(False)
+        self.atom_gat = GPSConv(self.hidden_size, GINEConv(seq_nn), heads=4)
+        self.motif_gat = GPSConv(self.hidden_size, GINEConv(seq_nn), heads=4)
         self.atom_type_embedder = nn.Embedding(atom_vocab_size, self.hidden_size).requires_grad_(False)
         self.bond_type_embedder = nn.Embedding(bond_list_size, self.hidden_size).requires_grad_(False)
         self.child_num_embedder = nn.Embedding(max_motif_neighbors, self.hidden_size).requires_grad_(False)
@@ -362,7 +362,7 @@ class DiffusionTransformer(pl.LightningModule):
         icls_loss = calculate_loss(icls_pred, icls_label)
         assm_loss = calculate_loss(assm_pred, assm_label[:,1:])
         topo_loss = calculate_bce_loss(topo_pred, topo_label)
-        return cls_loss + icls_loss + assm_loss + topo_loss
+        return 2*cls_loss + icls_loss + assm_loss + topo_loss
 
     def training_step(self, batch, batch_idx):
         loss = self.get_loss(batch, batch_idx)    
