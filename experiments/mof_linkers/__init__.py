@@ -15,7 +15,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from datetime import datetime
 from datasets import Dataset
 
-config_path = Path(__file__).parent.parent.parent.absolute() / 'configs' / 'zinc_config.toml'
+config_path = Path(__file__).parent.parent.parent.absolute() / 'configs' / 'mof_config.toml'
 cfg = toml.load(str(config_path))
 
 run_name = datetime.now().strftime(f"{cfg['setupparams']['name']}_run_%m%d_%H_%M")
@@ -49,10 +49,10 @@ def process_vocab(batch, data):
 def setup_vocab(setupparams):
     vocab_path = setupparams['vocab_path']
     smiles_path = setupparams['smiles_path']
-    csv_path = setupparams['csv_path']
     if os.path.exists(vocab_path):
         return
-    data = pd.read_csv(csv_path).smiles.tolist()
+    with open(setupparams['data_path'],'r') as f:
+        data = f.read().split()
     ncpu = mp.cpu_count()
     batch_size = len(data) // ncpu + 1
     batches = [data[i: i + batch_size] for i in range(0, len(data), batch_size)]

@@ -96,6 +96,8 @@ class NetworkPrediction:
         final_topk = []
         for i in range(topk):
             clab = cls_topk[i]
+            # len(re.findall(r':1',str)) >= 2
+            # regex to count :1 in string
             mask = NetworkPrediction.vocab.get_mask(clab).to(cls_scores.device)
             masked_icls_scores = F.log_softmax(icls_scores + mask, dim=-1)
             icls_scores_topk, icls_topk = masked_icls_scores.topk(topk, dim=-1)

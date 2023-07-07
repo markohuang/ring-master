@@ -35,7 +35,7 @@ in_channel=16
 out_channel=16
 # for pl.Trainer
 max_epochs=300
-accelerator="auto"
+accelerator="cpu"
 # val_check_interval=2000
 check_val_every_n_epoch=1
 accumulate_grad_batches=8

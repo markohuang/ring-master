@@ -4,7 +4,7 @@ import multiprocessing as mp
 from pathlib import Path
 from functools import partial
 from itertools import chain
-from .vocab import PairVocab, COMMON_ATOM_VOCAB, BOND_LIST
+from ringmaster.vocab import PairVocab, COMMON_ATOM_VOCAB, BOND_LIST
 from tqdm import tqdm
 from ringmaster.timber import MotifNode
 from ringmaster.nn_utils import NetworkPrediction

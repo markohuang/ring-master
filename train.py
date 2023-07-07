@@ -11,7 +11,16 @@ import pytorch_lightning as pl
 # from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.loggers import WandbLogger
 
-from experiments.zinc250k import cfg, setup_experiment, callbacks
+
+from importlib import import_module
+# import argparse
+# parser = argparse.ArgumentParser()
+# parser.add_argument('--experiment', type=str, default='mof')
+# args = parser.parse_args()
+# module = import_module('experiments.' + args.experiment)
+module = import_module('experiments.' + 'zinc250k')
+cfg, setup_experiment, callbacks = module.cfg, module.setup_experiment, module.callbacks
+
 from ringmaster.lumberjack import MolParser
 from ringmaster.model import DiffusionTransformer
 vocab, trainset, valset = setup_experiment(cfg)

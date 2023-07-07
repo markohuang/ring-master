@@ -1,19 +1,19 @@
 [setupparams]
-name="zinc250k"
-vocab_path='zinc_vocab.txt'
-smiles_path='zinc_smiles.txt'
-csv_path='zinc250k.csv'
+name="mof_linkers"
+vocab_path='mof_vocab.txt'
+smiles_path='mof_linkers.txt'
+data_path='/home/marko/data/mof_data/absorbants.txt'
 dataset_key='text'
-max_cand_size=40 # arbitrary
+max_cand_size=20 # arbitrary
 max_atom_neighbors=4 # arbitrary
 max_motif_neighbors=8 # arbitrary
-max_length=50 # arbitrary
+max_length=40 # arbitrary
 
 
 [trainingparams]
 cands_hidden_size=24
 hidden_size=48
-batch_size=512
+batch_size=128
 # training setup
 warmup_steps=1500
 # bert (i.e. denoiser) config
@@ -37,7 +37,7 @@ in_channel=16
 out_channel=16
 # for pl.Trainer
 max_epochs=300
-accelerator="cpu"
+accelerator="auto"
 # val_check_interval=2000
 check_val_every_n_epoch=1
 # accumulate_grad_batches=8
