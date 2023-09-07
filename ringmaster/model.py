@@ -80,8 +80,8 @@ class RingsNet(nn.Module):
             nn.ReLU(),
             nn.Linear(self.hidden_size, self.hidden_size),
         ).requires_grad_(False)
-        self.atom_gat = GPSConv(self.hidden_size, GINEConv(seq_nn), heads=4)
-        self.motif_gat = GPSConv(self.hidden_size, GINEConv(seq_nn), heads=4)
+        self.atom_gat = GPSConv(self.hidden_size, GINEConv(seq_nn), heads=4).requires_grad_(False)
+        self.motif_gat = GPSConv(self.hidden_size, GINEConv(seq_nn), heads=4).requires_grad_(False)
         self.atom_type_embedder = nn.Embedding(atom_vocab_size, self.hidden_size).requires_grad_(False)
         self.bond_type_embedder = nn.Embedding(bond_list_size, self.hidden_size).requires_grad_(False)
         self.child_num_embedder = nn.Embedding(max_motif_neighbors, self.hidden_size).requires_grad_(False)
@@ -134,7 +134,7 @@ class RingsNet(nn.Module):
             nn.Linear(self.hyperparams.hidden_hidden_size, self.out_channels)
         )
         self.register_buffer("position_ids", torch.arange(self.bertconfig.max_position_embeddings).expand((1, -1)))
-        self.position_embeddings = nn.Embedding(self.bertconfig.max_position_embeddings, self.bertconfig.hidden_size)
+        self.position_embeddings = nn.Embedding(self.bertconfig.max_position_embeddings, self.bertconfig.hidden_size).requires_grad_(False)
         self.LayerNorm = nn.LayerNorm(self.hyperparams.hidden_hidden_size, eps=self.bertconfig.layer_norm_eps)
         self.dropout = nn.Dropout(self.bertconfig.hidden_dropout_prob)
         # self.conditional_nn = nn.Linear(1,2) #TODO: change dimensions to match actual conditional data
@@ -328,8 +328,9 @@ class DiffusionTransformer(pl.LightningModule):
         model_output = self.model(torch.cat((x_t, prev_output), dim=-1), timesteps, conditionals)
         decoder_nll = self.token_discrete_loss(model_output, graph_data, slices)
         lsimple = mean_flat((x_embeds - model_output) ** 2)
+        self.log("train/lsimple", lsimple.mean(), batch_size=self.bs, on_step=True, sync_dist=True)
         # marko/may16: try tweeking the weight
-        loss = lsimple + 2 * decoder_nll
+        loss = 0.5 * lsimple + 2 * decoder_nll
         return loss.mean()
     
     # decoder_nll
@@ -362,7 +363,11 @@ class DiffusionTransformer(pl.LightningModule):
         icls_loss = calculate_loss(icls_pred, icls_label)
         assm_loss = calculate_loss(assm_pred, assm_label[:,1:])
         topo_loss = calculate_bce_loss(topo_pred, topo_label)
-        return 2*cls_loss + icls_loss + assm_loss + topo_loss
+        self.log("train/cls_loss", cls_loss.mean(), batch_size=self.bs, on_step=True, sync_dist=True)
+        self.log("train/icls_loss", icls_loss.mean(), batch_size=self.bs, on_step=True, sync_dist=True)
+        self.log("train/assm_loss", assm_loss.mean(), batch_size=self.bs, on_step=True, sync_dist=True)
+        self.log("train/topo_loss", topo_loss.mean(), batch_size=self.bs, on_step=True, sync_dist=True)
+        return cls_loss + icls_loss + 2*assm_loss + 2*topo_loss
 
     def training_step(self, batch, batch_idx):
         loss = self.get_loss(batch, batch_idx)    

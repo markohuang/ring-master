@@ -26,7 +26,7 @@ class Vocab:
 class PairVocab(object):
     def __init__(self, smiles_pairs):
         cls = list(zip(*smiles_pairs))[0]
-        self.masking_multiplier = -1000
+        self.masking_multiplier = 1000
             
         self.hvocab = sorted( list(set(cls)) )
         # one-hot mapping of motifs
@@ -64,7 +64,7 @@ class PairVocab(object):
 
     def get_mask(self, cls_idx, mask_rings=False):
         mask = self.mask * self.ringmask if mask_rings else self.mask
-        mask *= self.masking_multiplier
+        mask = mask*self.masking_multiplier-self.masking_multiplier
         if type(cls_idx) is torch.Tensor:
             mask = mask.to(cls_idx.device)
         return mask[cls_idx]

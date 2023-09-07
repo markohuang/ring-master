@@ -86,7 +86,7 @@ class NetworkPrediction:
     def root_info(self):
         return self.icls_pred[0].max(dim=-1)[1].item()
 
-    def get_topk_motifs(self, curr_idx, topk):
+    def get_topk_motifs(self, father_is_ring, curr_idx, topk):
         # TODO: if fake score used for testing is implemented with one hot,
         #       it fails, anything greater than 1.25, however, works
         cls_scores = self.cls_pred[curr_idx]
@@ -98,7 +98,7 @@ class NetworkPrediction:
             clab = cls_topk[i]
             # len(re.findall(r':1',str)) >= 2
             # regex to count :1 in string
-            mask = NetworkPrediction.vocab.get_mask(clab).to(cls_scores.device)
+            mask = NetworkPrediction.vocab.get_mask(clab, father_is_ring).to(cls_scores.device)
             masked_icls_scores = F.log_softmax(icls_scores + mask, dim=-1)
             icls_scores_topk, icls_topk = masked_icls_scores.topk(topk, dim=-1)
             topk_scores = cls_scores_topk[i].unsqueeze(-1) + icls_scores_topk

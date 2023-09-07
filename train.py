@@ -117,6 +117,7 @@ if __name__ == "__main__":
             'accelerator',
             'max_epochs',
             'check_val_every_n_epoch',
+            'devices',
             # 'val_check_interval',
         )}
     )

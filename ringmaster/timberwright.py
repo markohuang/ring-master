@@ -156,7 +156,8 @@ def decode(treenet: NetworkPrediction, topk=5) -> EditableMol:
             break
         father_motif = stack[-1]
         add_motif_success = False
-        for motif_prediction in treenet.get_topk_motifs(curr_idx, topk):
+        father_is_ring = father_motif.num_atoms > 2
+        for motif_prediction in treenet.get_topk_motifs(father_is_ring, curr_idx, topk):
             if add_motif_success: break
             if not motif_prediction: break # <pad> token
             father_motif.decorate_father()

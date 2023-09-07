@@ -17,7 +17,7 @@ from argparse import Namespace
 config_path = Path(__file__).parent.parent.parent.absolute() / 'configs' / 'oled_config.toml'
 cfg = toml.load(str(config_path))
 
-run_name = datetime.now().strftime("run_%m%d_%H_%M")
+run_name = datetime.now().strftime(f"{cfg['setupparams']['name']}_run_%m%d_%H_%M")
 cfg['setupparams'] |= dict(
     run_name=run_name,
     atom_vocab=COMMON_ATOM_VOCAB,
@@ -78,7 +78,10 @@ def setup_experiment(cfg):
     NetworkPrediction.vocab = motif_vocab
     NetworkPrediction.max_cand_size = setupparams['max_cand_size']
     NetworkPrediction.cands_hidden_size = trainingparams['cands_hidden_size']
-    return motif_vocab
+    dataset = Dataset.from_text(cfg['setupparams']['smiles_path']).train_test_split(test_size=0.1)
+    trainset = dataset['train']
+    valset = dataset['test']
+    return motif_vocab, trainset, valset
 
 from ringmaster.custom_callbacks import GenerateOnValidationCallback
 callbacks = [
