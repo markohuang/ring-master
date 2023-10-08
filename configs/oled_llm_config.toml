@@ -1,0 +1,40 @@
+[setupparams]
+name='oled_llm'
+vocab_path='vocab.txt'
+smiles_path='smiles.txt'
+dataset_key='text'
+max_cand_size=35 # arbitrary
+max_atom_neighbors=4 # arbitrary
+max_motif_neighbors=10 # arbitrary
+max_length=80 # arbitrary
+
+
+[trainingparams]
+smiles_max_length=150 # arbitrary
+latent_size=16
+cands_hidden_size=24
+hidden_size=64
+batch_size=128
+n_positions=81 # 69+1 for bos
+# training setup
+warmup_steps=2000
+smiles_vocab_size=290
+
+# GPT2Config
+n_layer=6
+n_head=6
+vocab_size=28491
+n_embd=384
+add_cross_attention=true
+lr=1e-4 # 5e-05
+
+
+# for pl.Trainer
+max_epochs=100
+accelerator="auto"
+# val_check_interval=2000
+check_val_every_n_epoch=1
+accumulate_grad_batches=10
+# enable_progress_bar=true
+devices=1
+# log_every_n_steps=1
