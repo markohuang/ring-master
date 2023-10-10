@@ -98,6 +98,8 @@ def setup_experiment(cfg):
     # dataset = Dataset.from_text(cfg['setupparams']['smiles_path']).train_test_split(test_size=0.1)
     # dataset.save_to_disk('/home/marko/Projects/ring-master/dataset')
     dataset = DatasetDict.load_from_disk('/home/marko/Projects/ring-master/dataset')
+    # trainset = dataset['train'].select(range(14000*128, 14000*128*2))
+    # valset = dataset['test'].select(range(1400*128))
     trainset = dataset['train']
     valset = dataset['test']
     tokenizer = AutoTokenizer.from_pretrained('/home/marko/Projects/ring-master/tokenizer')
@@ -107,7 +109,7 @@ def setup_experiment(cfg):
 from ringmaster.custom_callbacks import GenerateOnValidationCallback
 callbacks = [
     # GenerateOnValidationCallback(),
-    EarlyStopping(monitor="val/loss", mode="min", patience=10),
+    EarlyStopping(monitor="val/loss", mode="min", patience=20),
     LearningRateMonitor(logging_interval='step'),
     ModelCheckpoint(
         dirpath=f'checkpoints/{run_name}',

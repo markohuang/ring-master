@@ -19,6 +19,7 @@ from ringmaster.nn_utils import (
     timestep_embedding,
 )
 from ringmaster.timberwright import decode
+from ringmaster.clip_model import MyCLIPModel
 from torch_geometric.nn import GPSConv, GINEConv, global_add_pool
 from torch.nn.utils.parametrizations import orthogonal
 
@@ -27,8 +28,8 @@ from transformers import GPT2Config, GPT2Model
 
 
 from rdkit import RDLogger
-lg = RDLogger.logger() 
-lg.setLevel(RDLogger.CRITICAL)
+# lg = RDLogger.logger() 
+# lg.setLevel(RDLogger.CRITICAL)
 
 
 class RingsNet(nn.Module):
@@ -46,6 +47,8 @@ class RingsNet(nn.Module):
         gpt2_smiles_cfg.n_positions = cfg['smiles_max_length']
         gpt2_smiles_cfg.add_cross_attention = True
         self.smiles_transformer = MyGPT2Model(gpt2_smiles_cfg)
+        
+        self.clip_loss = MyCLIPModel(self.hyperparams.n_embd, self.hyperparams.n_embd, self.hyperparams.clip_dim)
 
         # marko/jun19: stuff for graph tensor message passing
         atom_vocab_size = params['setupparams']['atom_vocab'].size()
@@ -77,14 +80,14 @@ class RingsNet(nn.Module):
         #     nn.Linear(self.hidden_size, self.topo_size),
         #     nn.Sigmoid()
         # )
-        # self.clsNN = nn.Sequential(
-        #         # nn.Dropout(dropout),
-        #         nn.Linear(self.hidden_size, motif_vocab_size)
-        # )
-        self.iclsNN = nn.Sequential(
+        self.clsNN = nn.Sequential(
                 # nn.Dropout(dropout),
-                nn.Linear(self.hyperparams.n_embd, imotif_vocab_size)
+                nn.Linear(self.hyperparams.n_embd, motif_vocab_size)
         )
+        # self.iclsNN = nn.Sequential(
+        #         # nn.Dropout(dropout),
+        #         nn.Linear(self.hyperparams.n_embd, imotif_vocab_size)
+        # )
         self.bosNN = nn.Linear(self.hyperparams.latent_size, self.hyperparams.n_embd)
         self.smilesNN = nn.Linear(self.hyperparams.n_embd, cfg['smiles_vocab_size'])
 
@@ -186,7 +189,8 @@ class ScaffoldVAE(pl.LightningModule):
         # self.timesteps = self.hyperparams.timesteps
         self.save_hyperparameters()
         self.model = RingsNet(params, vocab)
-        self.ce_loss = torch.nn.CrossEntropyLoss(reduction='none')
+        # self.ce_loss = torch.nn.CrossEntropyLoss(reduction='none')
+        self.loss_fct = nn.CrossEntropyLoss()
         # self.bce_loss = torch.nn.BCEWithLogitsLoss(reduction='none')
         
     def configure_optimizers(self):
@@ -202,7 +206,7 @@ class ScaffoldVAE(pl.LightningModule):
         z_sample = self.latent_sample(mu, logvar)
         
         # cls_pred, icls_pred = self.model.decode_molecule(z_sample)
-        recon_loss = self.token_discrete_loss(
+        recon_loss, scaffold_hs, smiles_hs = self.token_discrete_loss(
             z_sample,
             graph_data,
             slices,
@@ -211,7 +215,9 @@ class ScaffoldVAE(pl.LightningModule):
         )
         kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1)
         self.log("train/kl_loss", kl_loss.mean(), batch_size=self.bs, on_step=True, sync_dist=True)
-        return (recon_loss + kl_loss).mean(dim=0)
+        clip_loss = self.model.clip_loss(smiles_hs, scaffold_hs)
+        self.log("train/clip_loss", clip_loss, batch_size=self.bs, on_step=True, sync_dist=True)
+        return (recon_loss + kl_loss).mean(dim=0) + clip_loss
         # return (recon_loss + KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
         
     
@@ -234,17 +240,22 @@ class ScaffoldVAE(pl.LightningModule):
         batch = graph_data['motif'].batch
         def prep_labels(labels, batch=batch, seq_length=self.model.sequence_length):
             return pad_graph_data(labels[:,None], batch, seq_length, -100).squeeze().long()
-        # cls_label = prep_labels(graph_data['motif'].cls)
-        icls_label = prep_labels(graph_data['motif'].icls)
-        temp = icls_label * torch.arange(icls_label.shape[1], 0, -1).to(icls_label.device)
-        icls_label[torch.arange(icls_label.shape[0]), temp.argmin(dim=1)] = 0
+        # icls_label = prep_labels(graph_data['motif'].icls)
         
-        scaffold_input_ids = torch.clone(icls_label).to(icls_label.device)
-        scaffold_input_ids[scaffold_input_ids==-100] = 0
+        cls_label = prep_labels(graph_data['motif'].cls)
+        # add <bos> token id to beginning of cls_label
+        cls_label = torch.concat((torch.zeros(cls_label.shape[0], 1).to(cls_label.device).long(), cls_label), dim=1)
+        # add <eos> token id to end of cls_label
+        temp = cls_label * torch.arange(cls_label.shape[1], 0, -1).to(cls_label.device)
+        cls_label[torch.arange(cls_label.shape[0]), temp.argmin(dim=1)] = 1
         
-        scaffold_mask = torch.clone(scaffold_input_ids).to(icls_label.device)
-        scaffold_mask[scaffold_mask!=-100] = 1
-        scaffold_mask = torch.concat((torch.ones(scaffold_mask.shape[0], 1).to(icls_label.device), scaffold_mask), dim=1)
+        scaffold_input_ids = torch.clone(cls_label).to(cls_label.device)
+        scaffold_input_ids[scaffold_input_ids==-100] = 1
+        
+        scaffold_mask = torch.clone(cls_label).to(cls_label.device)
+        scaffold_mask[cls_label!=-100] = 1
+        scaffold_mask[cls_label==-100] = 0
+        scaffold_mask = torch.concat((torch.ones(scaffold_mask.shape[0], 1).to(cls_label.device), scaffold_mask), dim=1)
 
         bos_embeds = self.model.bosNN(z_sample)
         scaffold_hidden_states = self.model.scaffold_transformer(
@@ -255,7 +266,7 @@ class ScaffoldVAE(pl.LightningModule):
         
         smiles_attention_mask = torch.concat(
             (
-                torch.ones(smiles_attention_mask.shape[0], 1).to(icls_label.device),
+                torch.ones(smiles_attention_mask.shape[0], 1).to(cls_label.device),
                 smiles_attention_mask
             ),
             dim=1
@@ -267,27 +278,27 @@ class ScaffoldVAE(pl.LightningModule):
             encoder_hidden_states=scaffold_hidden_states
         )[0]
         
-        scaffold_logits = self.model.iclsNN(scaffold_hidden_states)
+        scaffold_logits = self.model.clsNN(scaffold_hidden_states)
         shifted_scaffold_logits = scaffold_logits[..., :-1, :].contiguous()
-        loss_fct = nn.CrossEntropyLoss()
-        scaffold_loss = loss_fct(
-            shifted_scaffold_logits.view(-1, shifted_scaffold_logits.size(-1)),
-            icls_label.view(-1)
-        ).mean()
+        scaffold_loss = self.loss_fct(
+            shifted_scaffold_logits.view(-1, shifted_scaffold_logits.size(-1)).contiguous(),
+            cls_label.view(-1).contiguous()
+        )
         # predict smiles loss 
         smiles_label = smiles_input_ids.clone()
         pad_indices = torch.where(smiles_input_ids == 2) # tokenizer.pad_token_id
         smiles_label[pad_indices] = -100
         smiles_logits = self.model.smilesNN(smiles_hidden_states)
         shifted_smiles_logits = smiles_logits[..., :-1, :].contiguous()
-        smiles_loss = loss_fct(
-            shifted_smiles_logits.view(-1, shifted_smiles_logits.size(-1)),
+        smiles_loss = self.loss_fct(
+            shifted_smiles_logits.view(-1, shifted_smiles_logits.size(-1)).contiguous(),
             smiles_label.view(-1).contiguous()
-        ).mean()
+        )
         
+        # loss = scaffold_loss
         loss = scaffold_loss + smiles_loss
         self.log("train/recon_loss", loss, batch_size=self.bs, on_step=True, sync_dist=True)
-        return loss
+        return loss, scaffold_hidden_states[:,0,:], smiles_hidden_states[:,0,:]
 
     def training_step(self, batch, batch_idx):
         loss = self.get_loss(batch, batch_idx)    
@@ -316,7 +327,7 @@ class MyGPT2Model(GPT2Model):
         self.cfg = config
         super().__init__(config)
 
-    def generate_next(self, bos_embeds, input_ids):
+    def generate_next(self, bos_embeds, input_ids, encoder_hidden_states=None, encoder_attention_mask=None):
         device = bos_embeds.device
         inputs_embeds = self.wte(input_ids[:,1:])
         inputs_embeds = torch.concat((bos_embeds[:,None,:], inputs_embeds), dim=1)
@@ -327,7 +338,17 @@ class MyGPT2Model(GPT2Model):
         position_ids = torch.arange(past_length, input_shape[-1] + past_length, dtype=torch.long, device=device)
         position_ids = position_ids.unsqueeze(0).view(-1, input_shape[-1])
         
-        encoder_attention_mask = None
+        if encoder_hidden_states is not None:
+            assert encoder_attention_mask is not None
+            # If a 2D or 3D attention mask is provided for the cross-attention
+            # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
+            # encoder_batch_size, encoder_sequence_length, _ = encoder_hidden_states.size()
+            # encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
+            # if encoder_attention_mask is None:
+            #     encoder_attention_mask = torch.ones(encoder_hidden_shape, device=device)
+            encoder_attention_mask = self.invert_attention_mask(encoder_attention_mask)
+        else:
+            encoder_attention_mask = None
 
         # Prepare head mask if needed
         # 1.0 in head_mask indicate we keep the head
@@ -352,6 +373,7 @@ class MyGPT2Model(GPT2Model):
                 hidden_states,
                 layer_past=layer_past,
                 head_mask=head_mask[i],
+                encoder_hidden_states=encoder_hidden_states,
                 encoder_attention_mask=encoder_attention_mask,
             )
             hidden_states = outputs[0]

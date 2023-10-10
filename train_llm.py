@@ -16,6 +16,7 @@ from pytorch_lightning.loggers import WandbLogger
 
 
 from importlib import import_module
+# module = import_module('experiments.' + 'oled_llm_large')
 module = import_module('experiments.' + 'oled_llm')
 cfg, setup_experiment, callbacks = module.cfg, module.setup_experiment, module.callbacks
 
@@ -91,14 +92,14 @@ if __name__ == "__main__":
 
     tloader = DataLoader(
         trainset,
-        num_workers=cpu_count(),
+        num_workers=20,
         batch_size=cfg['trainingparams']['batch_size'],
         collate_fn=collate_fn,
         # shuffle=True,
     )
     vloader = DataLoader(
         valset,
-        num_workers=cpu_count(),
+        num_workers=20,
         batch_size=cfg['trainingparams']['batch_size'],
         collate_fn=collate_fn,
     )
