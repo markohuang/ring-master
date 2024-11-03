@@ -7,11 +7,11 @@ As opposed to the smiles representation where an atom-by-atom approach is taken 
 Below are gifs showing the construction process of molecules given correctly diffused motifs and their orderings. 
 <table>
   <tr>
-    <td><img src="https://github.com/markohuang/selfies_diffusion/blob/main/gifs/output1.gif" alt="GIF 1" width="300"></td>
-    <td><img src="https://github.com/markohuang/selfies_diffusion/blob/main/gifs/output2.gif" alt="GIF 2" width="300"></td>
+    <td><img src="https://github.com/markohuang/selfies_diffusion/blob/master/gifs/output1.gif" alt="GIF 1" width="300"></td>
+    <td><img src="https://github.com/markohuang/selfies_diffusion/blob/master/gifs/output2.gif" alt="GIF 2" width="300"></td>
   </tr>
   <tr>
-    <td><img src="https://github.com/markohuang/selfies_diffusion/blob/main/gifs/output3.gif" alt="GIF 3" width="300"></td>
-    <td><img src="https://github.com/markohuang/selfies_diffusion/blob/main/gifs/output4.gif" alt="GIF 4" width="300"></td>
+    <td><img src="https://github.com/markohuang/selfies_diffusion/blob/master/gifs/output3.gif" alt="GIF 3" width="300"></td>
+    <td><img src="https://github.com/markohuang/selfies_diffusion/blob/master/gifs/output4.gif" alt="GIF 4" width="300"></td>
   </tr>
 </table>
